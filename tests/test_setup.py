@@ -1,0 +1,891 @@
+import contextlib
+import importlib.util
+import io
+import http.server
+import json
+import os
+from pathlib import Path
+import subprocess
+import shlex
+import shutil
+import tempfile
+import threading
+import unittest
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location('configure', ROOT / 'scripts/configure.py')
+configure = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(configure)
+
+
+class ConfigurationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='setup test ')
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name)
+
+    def apply(self, config_dir=ROOT / 'config'):
+        with contextlib.redirect_stdout(io.StringIO()):
+            configure.configure(self.home, config_dir)
+
+    def snapshot(self):
+        return {str(p.relative_to(self.home)): p.read_bytes()
+                for p in self.home.rglob('*') if p.is_file()}
+
+    def test_complete_template_contract(self):
+        actual = {p.name: p.read_text() for p in sorted((ROOT / 'config').iterdir()) if p.name != '.DS_Store'}
+        expected = json.loads((ROOT / 'tests/fixtures/config-golden.json').read_text())
+        self.assertEqual(actual, expected)
+
+    def test_fresh_install_and_repeat_are_identical(self):
+        self.apply()
+        before = self.snapshot()
+        self.apply()
+        self.assertEqual(before, self.snapshot())
+        configure.verify(self.home)
+        for path in ('.claude/settings.json', '.codex/config.toml', '.kiro/settings/permissions.yaml'):
+            self.assertEqual((self.home / path).stat().st_mode & 0o777, 0o600)
+        self.assertFalse((self.home / '.codex/auth.json').exists())
+
+    def test_personal_configs_auth_and_shell_are_preserved(self):
+        files = {'.claude/settings.json': '{"env":{"PERSONAL_SETTING":"yes"}}\n',
+                 '.codex/config.toml': 'model = "personal-choice"\n',
+                 '.codex/auth.json': '{"existing":"credential"}\n',
+                 '.kiro/settings/permissions.yaml': 'rules:\n  - capability: shell\n    effect: allow\n',
+                 '.kiro/auth.json': '{"existing":"credential"}\n',
+                 '.zshrc': 'export PERSONAL=yes\n', '.zprofile': '# personal profile\n'}
+        for name, text in files.items():
+            target = self.home / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        self.apply()
+        for name, text in files.items():
+            if name in ('.zshrc', '.zprofile'):
+                self.assertTrue((self.home / name).read_text().startswith(text))
+                backups = list(self.home.glob(name + '.backup-*'))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(backups[0].read_text(), text)
+            else:
+                self.assertEqual((self.home / name).read_text(), text)
+        before = self.snapshot()
+        self.apply()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_kiro_policy_reporting_and_missing_empty_or_symlink_rejection(self):
+        self.apply()
+        self.assertEqual(configure.kiro_policy_status(self.home), 'default-ask')
+        policy = self.home / configure.KIRO_PATH
+        policy.write_text('rules:\n  - capability: shell\n    effect: allow\n')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            configure.configure(self.home, ROOT / 'config')
+            configure.verify(self.home)
+        self.assertIn('not audited', output.getvalue())
+        self.assertEqual(configure.kiro_policy_status(self.home), 'custom-unreviewed')
+        policy.write_text('   \n')
+        before = self.snapshot()
+        with self.assertRaises(ValueError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+        policy.unlink()
+        with self.assertRaises(FileNotFoundError):
+            configure.verify(self.home)
+        for path in (policy, policy.parent, policy.parent.parent):
+            with self.subTest(path=path):
+                if path.is_dir():
+                    path.rmdir()
+                path.symlink_to(self.home / 'missing')
+                with self.assertRaises(ValueError):
+                    self.apply()
+                with self.assertRaises(ValueError):
+                    configure.verify(self.home)
+                path.unlink()
+
+    def test_kiro_external_rule_contract(self):
+        capabilities = ('all', 'builtin', 'filesystem', 'fs_read', 'fs_write', 'shell', 'web_fetch',
+                        'web_search', 'mcp', 'subagent', 'skill', 'power', 'context', 'diagnostics', 'sandbox_network')
+        for capability in capabilities:
+            for effect in ('ask', 'deny', 'allow'):
+                configure.validate_kiro(json.dumps({'rules': [dict(capability=capability, effect=effect,
+                                                                 match=['*'], exclude=['example'])]}))
+        invalid = [None, [], {}, {'rules': []}, {'rules': {}}, {'rules': [], 'extra': True}]
+        rules = [None, {}, {'capability': 'all'}, {'effect': 'ask'},
+                 {'capability': [], 'effect': 'ask'}, {'capability': 'unknown', 'effect': 'ask'},
+                 {'capability': 'all', 'effect': []}, {'capability': 'all', 'effect': 'trust'},
+                 {'capability': 'all', 'effect': 'ask', 'extra': True}]
+        for key in ('match', 'exclude'):
+            rules += [dict(capability='all', effect='ask', **{key: value})
+                      for value in (None, '*', [], [''], [1])]
+        invalid += [{'rules': [rule]} for rule in rules]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                configure.validate_kiro(json.dumps(value))
+
+    def test_invalid_external_config_does_not_write(self):
+        external = self.home / 'external'
+        external.mkdir()
+        for path in (ROOT / 'config').iterdir():
+            (external / path.name).write_bytes(path.read_bytes())
+        for name, invalid in [('claude-settings.json', '[]'),
+                              ('codex-config.toml', 'bad = ['),
+                              ('kiro-permissions.json', '{}'), ('iterm2-profile.json', '{}'), ('vscode-settings.json', '[]')]:
+            with self.subTest(name=name):
+                path = external / name
+                original = path.read_text()
+                path.write_text(invalid)
+                before = self.snapshot()
+                with self.assertRaises(ValueError):
+                    self.apply(external)
+                self.assertEqual(self.snapshot(), before)
+                path.write_text(original)
+
+    def test_external_templates_and_existing_invalid_config(self):
+        external = self.home / 'external'
+        external.mkdir()
+        for path in (ROOT / 'config').iterdir():
+            (external / path.name).write_bytes(path.read_bytes())
+        (external / 'codex-config.toml').write_text('model_reasoning_effort = "high"\n')
+        self.apply(external)
+        self.assertEqual((self.home / '.codex/config.toml').read_text(), 'model_reasoning_effort = "high"\n')
+        (self.home / '.claude/settings.json').write_text('{bad')
+        before = self.snapshot()
+        with self.assertRaises(ValueError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_symlink_is_not_replaced(self):
+        target = self.home / 'personal'
+        target.write_text('# keep me\n')
+        (self.home / '.zshrc').symlink_to(target)
+        before = self.snapshot()
+        with self.assertRaises(ValueError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+        self.assertTrue((self.home / '.zshrc').is_symlink())
+
+    def test_managed_file_update_keeps_backup(self):
+        self.apply()
+        path = self.home / '.config/macos-setup/shell.zsh'
+        path.write_text('# old managed content\n')
+        self.apply()
+        backups = list(path.parent.glob('shell.zsh.backup-*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), '# old managed content\n')
+
+    def test_iterm_updates_keep_backups_and_temporary_files_outside_watched_folder(self):
+        self.apply()
+        profile = self.home / configure.PROFILE_PATH
+        old = profile.read_bytes()
+        legacy = profile.with_name(profile.name + '.backup-legacy')
+        legacy.write_bytes(old)
+        with self.assertRaisesRegex(ValueError, 'DynamicProfiles'):
+            configure.verify(self.home)
+        stale = profile.with_name('.' + profile.name + '12345678')
+        stale.write_text('{incomplete')
+        before = (legacy.read_bytes(), legacy.stat().st_mtime_ns, legacy.stat().st_mode)
+        profile.write_text(old.decode().replace('"Unlimited Scrollback": true', '"Unlimited Scrollback": false'))
+        original = configure.tempfile.mkstemp
+        watched = []
+
+        def create(*args, **kwargs):
+            result = original(*args, **kwargs)
+            watched.extend(p.name for p in profile.parent.iterdir() if p.is_file() and p != profile)
+            return result
+
+        with mock.patch.object(configure.tempfile, 'mkstemp', side_effect=create):
+            self.apply()
+        self.assertEqual(watched, [])
+        backup_dir = self.home / configure.PROFILE_BACKUP_PATH
+        moved = backup_dir / legacy.name
+        self.assertEqual((moved.read_bytes(), moved.stat().st_mtime_ns, moved.stat().st_mode), before)
+        self.assertEqual((backup_dir / stale.name).read_text(), '{incomplete')
+        self.assertEqual(len(list(backup_dir.glob(profile.name + '.backup-*'))), 2)
+        self.assertEqual(profile.read_bytes(), old)
+        self.assertEqual([p.name for p in profile.parent.iterdir()], [profile.name])
+        snapshot = self.snapshot()
+        timestamp = profile.stat().st_mtime_ns
+        self.apply()
+        self.assertEqual(self.snapshot(), snapshot)
+        self.assertEqual(profile.stat().st_mtime_ns, timestamp)
+
+    def test_iterm_backup_symlinks_and_collisions_are_rejected_before_writes(self):
+        self.apply()
+        profile = self.home / configure.PROFILE_PATH
+        legacy = profile.with_name(profile.name + '.backup-legacy')
+        legacy.symlink_to(profile)
+        before = profile.read_bytes()
+        with self.assertRaises(ValueError):
+            self.apply()
+        legacy.unlink()
+        backup_dir = self.home / configure.PROFILE_BACKUP_PATH
+        legacy.write_bytes(before)
+        (backup_dir / legacy.name).write_bytes(b'previous backup')
+        with self.assertRaises(ValueError):
+            self.apply()
+        self.assertEqual(legacy.read_bytes(), before)
+        self.assertEqual((backup_dir / legacy.name).read_bytes(), b'previous backup')
+        self.assertEqual(profile.read_bytes(), before)
+
+    def test_entire_keyboard_contract_in_real_zsh(self):
+        shell = ROOT / 'config/shell.zsh'
+        # Each declared binding must be active in a real interactive Zsh.
+        commands = [line for line in shell.read_text().splitlines() if line.startswith("bindkey '")]
+        self.assertEqual(len(commands), 13)
+        for command in commands:
+            sequence, widget = command[len('bindkey '):].rsplit(' ', 1)
+            result = subprocess.run(['zsh', '-fic', f'source "$1"; bindkey {sequence}',
+                                     'test', str(shell)], text=True, capture_output=True, check=True,
+                                     env={**os.environ, 'HOME': str(self.home), 'ZSH': str(self.home / '.oh-my-zsh')})
+            self.assertEqual(result.stdout.strip().split()[-1], widget)
+            self.assertEqual(result.stderr, '')
+        profile = json.loads((ROOT / 'config/iterm2-profile.json').read_text())['Profiles'][0]
+        self.assertIs(profile['Unlimited Scrollback'], True)
+        self.assertEqual(profile['Scrollback Lines'], 0)
+        self.assertIs(profile['Mouse Reporting'], True)
+        self.assertEqual(profile['Terminal Type'], 'xterm-256color')
+        self.assertEqual(set(profile['Keyboard Map']), {
+            '0xf702-0x240000', '0xf703-0x240000', '0xf702-0x280000', '0xf703-0x280000',
+            '0xf702-0x300000', '0xf703-0x300000', '0xf729-0x0', '0xf72b-0x0', '0x7f-0x80000'})
+
+
+class InstallerTests(unittest.TestCase):
+    def run_shell(self, script, env=None, cwd=None):
+        with tempfile.TemporaryDirectory(prefix='setup-shell-state-') as state:
+            shell_env = {key: value for key, value in os.environ.items()
+                         if not key.startswith(('GIT_', 'HOMEBREW_GIT'))
+                         and key not in ('HOMEBREW_PREFIX', 'HOMEBREW_FORCE_BREWED_GIT')}
+            shell_env.update(HOMEBREW_PREFIX=state + '/brew', GIT_CONFIG_GLOBAL=state + '/global',
+                             GIT_CONFIG_SYSTEM=state + '/system', XDG_CONFIG_HOME=state + '/xdg')
+            shell_env.update(env or {})
+            shell_env['TEST_STATE'] = state
+            return subprocess.run(['bash', '-c', 'source "$1"; ' + script, 'test', str(ROOT / 'setup.sh')],
+                                  input='', text=True, capture_output=True, cwd=cwd,
+                                  env=shell_env)
+
+    def test_complete_package_iteration_survives_stdin_consumers(self):
+        result = self.run_shell("""
+ensure_formula() { cat >/dev/null; echo "CHECK formula:$1"; }
+ensure_cask() { cat >/dev/null; echo "CHECK cask:$1"; }
+git() { :; }
+ensure_git_lfs_filters() { :; }
+install_packages
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = ['CHECK formula:' + name for name in (ROOT / 'config/formulae.txt').read_text().split()]
+        expected += ['CHECK cask:' + line.split('\t')[0] for line in (ROOT / 'config/casks.tsv').read_text().splitlines()]
+        self.assertEqual([line for line in result.stdout.splitlines() if line.startswith('CHECK ')], expected)
+
+    def test_formula_skip_install_update_and_repair(self):
+        for installed, healthy, update, operation in [
+            ('false', 'false', 'false', 'install'), ('true', 'true', 'false', None),
+            ('true', 'true', 'true', 'upgrade'), ('true', 'false', 'false', 'reinstall')]:
+            with self.subTest(operation=operation):
+                result = self.run_shell(f'INSTALLED={installed}; HEALTHY={healthy}; UPDATE={update}; ' + """
+brew() { if [[ "$1" == list ]]; then [[ "$INSTALLED" == true ]]; else touch "$TEST_STATE/healthy"; echo "MUTATE $*"; fi; }
+probe_formula() { [[ "$HEALTHY" == true || -f "$TEST_STATE/healthy" ]]; }
+ensure_formula go
+echo "ACTION $STEP_ACTION"
+""")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if operation:
+                    self.assertIn(f'MUTATE {operation} --formula homebrew/core/go', result.stdout)
+                else:
+                    self.assertNotIn('MUTATE', result.stdout)
+                    self.assertIn('ACTION skipped', result.stdout)
+
+    def test_cask_skip_update_repair_and_preserve(self):
+        for managed, healthy, update, operation in [
+            ('true', 'true', 'false', None), ('true', 'true', 'true', 'upgrade'),
+            ('true', 'false', 'false', 'reinstall'), ('false', 'true', 'true', None),
+            ('false', 'false', 'false', 'install')]:
+            with self.subTest(managed=managed, operation=operation):
+                result = self.run_shell(f'MANAGED={managed}; HEALTHY={healthy}; UPDATE={update}; ' + """
+brew() { if [[ "$1" == list ]]; then [[ "$MANAGED" == true ]]; else touch "$TEST_STATE/healthy"; echo "MUTATE $*"; fi; }
+app_healthy() { [[ "$HEALTHY" == true || -f "$TEST_STATE/healthy" ]]; }
+ensure_cask example Never-Existing-Setup-Test-Example.app
+""")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if operation:
+                    self.assertIn(f'MUTATE {operation} --cask homebrew/cask/example', result.stdout)
+                else:
+                    self.assertNotIn('MUTATE', result.stdout)
+
+    def test_ai_cli_checks_never_install_update_or_query_managers(self):
+        for name, installer in [('claude', 'https://claude.ai/install.sh'),
+                                ('codex', 'https://chatgpt.com/codex/install.sh')]:
+            for healthy in ('true', 'false'):
+                for update in ('true', 'false'):
+                    with self.subTest(name=name, healthy=healthy, update=update):
+                        script = f'HEALTHY={healthy}; UPDATE={update}; ' + """
+forbidden() { echo MUTATION >&2; return 99; }
+brew() { forbidden; }
+npm() { forbidden; }
+curl() { forbidden; }
+download_installer() { forbidden; }
+agent_healthy() { [[ "$HEALTHY" == true ]]; }
+claude() { echo claude-version; }
+codex() { echo codex-version; }
+"""
+                        result = self.run_shell(script + f'check_agent {name}; echo "$STEP_ACTION"')
+                        self.assertEqual(result.returncode, 0 if healthy == 'true' else 1, result.stderr)
+                        self.assertNotIn('MUTATION', result.stdout + result.stderr)
+                        if healthy == 'true':
+                            self.assertIn('preserved', result.stdout)
+                        else:
+                            self.assertIn('curl -fsSL ' + installer, result.stderr)
+                            self.assertNotIn('preserved', result.stdout)
+
+    def test_ai_apps_are_check_only_even_with_update_or_brew_receipts(self):
+        apps = [('chatgpt', 'ChatGPT.app', 'https://learn.chatgpt.com/docs/app'),
+                ('kiro', 'Kiro.app', 'https://kiro.dev/downloads/'),
+                ('kiro-cli', 'Kiro CLI.app', 'https://cli.kiro.dev/install')]
+        for name, app, source in apps:
+            for healthy in ('true', 'false'):
+                for update in ('true', 'false'):
+                    with self.subTest(name=name, healthy=healthy, update=update):
+                        script = f'HEALTHY={healthy}; UPDATE={update}; ' + """
+brew() { echo WRONG >&2; return 99; }
+curl() { echo WRONG >&2; return 99; }
+app_healthy() { [[ "$HEALTHY" == true ]]; }
+"""
+                        result = self.run_shell(script + f'ensure_cask {name} {shlex.quote(app)}; echo "$STEP_ACTION"')
+                        self.assertEqual(result.returncode, 0 if healthy == 'true' else 1, result.stderr)
+                        self.assertNotIn('WRONG', result.stdout + result.stderr)
+                        if healthy == 'true':
+                            self.assertIn('preserved', result.stdout)
+                        else:
+                            self.assertIn(source, result.stderr)
+
+    def test_failures_do_not_continue(self):
+        for script in [
+            'brew() { return 1; }; ensure_formula go',
+            'agent_healthy() { return 1; }; brew() { return 1; }; npm() { return 1; }; '
+            'download_installer() { echo WRONG; }; check_agent codex',
+            'brew() { return 0; }; probe_formula() { return 1; }; ensure_formula go']:
+            result = self.run_shell(script + '; echo WRONG')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn('WRONG', result.stdout)
+
+    def test_homebrew_download_policy_defaults_and_personal_override(self):
+        result = self.run_shell('unset HOMEBREW_CURLRC; configure_downloads; '
+                                'test "$HOMEBREW_CURLRC" = "$ROOT/config/download.curlrc"; '
+                                'bash -c \'test -f "$HOMEBREW_CURLRC"\'')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for override in ('/private/custom.curlrc', '1'):
+            result = self.run_shell(f'export HOMEBREW_CURLRC={override}; configure_downloads; '
+                                    f'test "$HOMEBREW_CURLRC" = {override}')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Preserving', result.stdout)
+            self.assertNotIn('/private/custom.curlrc', result.stdout)
+
+    def test_real_curl_policy_downloads_and_aborts_stalled_transfers(self):
+        release = threading.Event()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', '2')
+                self.end_headers()
+                self.wfile.flush()
+                if self.path == '/stall':
+                    release.wait(10)
+                else:
+                    self.wfile.write(b'OK')
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = ['curl', '--disable', '--config', str(ROOT / 'config/download.curlrc'),
+                    '--silent', '--noproxy', '*', '--retry', '0']
+            url = f'http://127.0.0.1:{server.server_port}'
+            healthy = subprocess.run([*base, url + '/ok'], capture_output=True, timeout=5)
+            self.assertEqual(healthy.returncode, 0, healthy.stderr)
+            self.assertEqual(healthy.stdout, b'OK')
+            # Shorten the public policy's 60-second stall interval for the test.
+            stalled = subprocess.run([*base, '--speed-time', '1', url + '/stall'],
+                                     capture_output=True, timeout=5)
+            self.assertEqual(stalled.returncode, 28, stalled.stderr)
+        finally:
+            release.set()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_unrelated_tap_warning_does_not_change_trust_or_block_go(self):
+        result = self.run_shell('''
+INSTALLED=false
+brew() {
+  case "$1" in
+    list) [[ "$INSTALLED" == true ]];;
+    install) echo 'Warning: unrelated tap is not trusted' >&2; touch "$TEST_STATE/healthy";;
+    *) echo WRONG >&2; return 9;;
+  esac
+}
+probe_formula() { [[ -f "$TEST_STATE/healthy" ]]; }
+ensure_formula go
+echo "$STEP_ACTION"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'installed')
+        self.assertNotIn('WRONG', result.stderr)
+        failed = self.run_shell('brew() { if [[ "$1" == list ]]; then return 1; else return 28; fi; }; '
+                                'ensure_formula go; echo WRONG')
+        self.assertEqual(failed.returncode, 28)
+        self.assertNotIn('WRONG', failed.stdout)
+
+    def test_homebrew_refresh_is_explicit(self):
+        for update in ('false', 'true'):
+            result = self.run_shell(f'UPDATE={update}; ' + '''
+export HOMEBREW_ASK=1
+xcode-select() { return 0; }
+command() { return 0; }
+brew() { [[ "$HOMEBREW_NO_ASK" == 1 && -z "${HOMEBREW_ASK+x}" ]] || return 99; echo "MUTATE $*"; }
+bootstrap
+bash -c '[[ "$HOMEBREW_NO_ASK" == 1 && -z "${HOMEBREW_ASK+x}" ]]'
+''')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual('MUTATE update' in result.stdout, update == 'true')
+
+    def test_entire_managed_package_surface_uses_official_names(self):
+        formulae = (ROOT / 'config/formulae.txt').read_text().split()
+        casks = [line.split('\t')[0] for line in (ROOT / 'config/casks.tsv').read_text().splitlines()
+                 if line.split('\t')[0] not in ('chatgpt', 'kiro', 'kiro-cli')]
+        for kind, names in [('formula', formulae), ('cask', casks)]:
+            for name in names:
+                for installed, healthy, update, operation in [
+                    ('false', 'false', 'false', 'install'), ('true', 'false', 'false', 'reinstall'),
+                    ('true', 'true', 'true', 'upgrade'), ('true', 'true', 'false', 'skip')]:
+                    with self.subTest(kind=kind, name=name, operation=operation):
+                        prefix = ('' if '/' in name else 'homebrew/core/') if kind == 'formula' else 'homebrew/cask/'
+                        script = f'INSTALLED={installed}; HEALTHY={healthy}; UPDATE={update}; EXPECTED={prefix}{name}; KIND={kind}; ' + '''
+brew() {
+  [[ "$2" == "--$KIND" && "$3" == "$EXPECTED" && $# == 3 ]] || return 99
+  case "$1" in
+    list) [[ "$INSTALLED" == true ]];;
+    install|upgrade|reinstall) touch "$TEST_STATE/healthy"; echo "$1";;
+    *) return 98;;
+  esac
+}
+probe_formula() { [[ "$HEALTHY" == true || -f "$TEST_STATE/healthy" ]]; }
+app_healthy() { [[ "$HEALTHY" == true || -f "$TEST_STATE/healthy" ]]; }
+git() { :; }
+ensure_git_lfs_filters() { :; }
+'''
+                        script += (f'ensure_formula {name}' if kind == 'formula' else
+                                   f'ensure_cask {name} Never-Existing-Setup-Test-Example.app')
+                        result = self.run_shell(script)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout.strip(), '' if operation == 'skip' else operation)
+
+    def test_charm_existing_core_channel_and_failures(self):
+        for name in ('glow', 'pop', 'gum', 'crush'):
+            for healthy, update, operation in [('true', 'false', ''), ('true', 'true', 'upgrade'),
+                                               ('false', 'false', 'reinstall')]:
+                script = f'HEALTHY={healthy}; UPDATE={update}; CORE=homebrew/core/{name}; ' + """
+brew() {
+  [[ "$2" == --formula ]] || return 98
+  if [[ "$1" == list ]]; then [[ "$3" == "$CORE" ]]; return; fi
+  [[ "$3" == "$CORE" ]] || return 99
+  echo "$1"
+  touch "$TEST_STATE/healthy"
+}
+probe_formula() { [[ "$HEALTHY" == true || -f "$TEST_STATE/healthy" ]]; }
+"""
+                result = self.run_shell(script + f'ensure_formula charmbracelet/tap/{name}')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), operation)
+            for operation, installed in [('install', 'false'), ('upgrade', 'true'), ('reinstall', 'true')]:
+                script = f'INSTALLED={installed}; UPDATE=true; OPERATION={operation}; ' + """
+brew() {
+  case "$1" in
+    list) [[ "$INSTALLED" == true ]];;
+    "$OPERATION") return 22;;
+    *) return 99;;
+  esac
+}
+probe_formula() { [[ "$OPERATION" != reinstall ]]; }
+"""
+                result = self.run_shell(script + f'ensure_formula charmbracelet/tap/{name}; echo WRONG')
+                self.assertEqual(result.returncode, 22, result.stderr)
+                self.assertNotIn('WRONG', result.stdout)
+
+    def test_node_probe_covers_npm(self):
+        result = self.run_shell('node() { return 0; }; npm() { return 1; }; probe_formula node')
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_git_lfs_repeat_keeps_global_config_metadata_and_custom_filters(self):
+        with tempfile.TemporaryDirectory(prefix='lfs-config-') as directory:
+            target = Path(directory) / 'gitconfig'
+            prefix = f'export GIT_CONFIG_GLOBAL={shlex.quote(str(target))}; '
+            values = {'clean':'git-lfs clean -- %f', 'smudge':'git-lfs smudge -- %f',
+                      'process':'git-lfs filter-process', 'required':'true'}
+            setup = prefix + '; '.join('git config --global filter.lfs.' + key + ' ' + shlex.quote(value)
+                                      for key, value in values.items())
+            self.assertEqual(self.run_shell(setup).returncode, 0)
+            before = (target.read_bytes(), target.stat().st_mtime_ns)
+            result = self.run_shell(prefix + 'ensure_git_lfs_filters; ensure_git_lfs_filters')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((target.read_bytes(), target.stat().st_mtime_ns), before)
+            for key in values:
+                self.assertEqual(self.run_shell(prefix + 'git config --global filter.lfs.' + key + ' custom').returncode, 0)
+                before = (target.read_bytes(), target.stat().st_mtime_ns)
+                result = self.run_shell(prefix + 'ensure_git_lfs_filters')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual((target.read_bytes(), target.stat().st_mtime_ns), before)
+                self.assertEqual(self.run_shell(prefix + 'git config --global filter.lfs.' + key + ' ' + shlex.quote(values[key])).returncode, 0)
+            target.unlink()
+            result = self.run_shell(prefix + 'git() { if [[ "$1 $2" == "config --list" ]]; then return 0; fi; '
+                                    'if [[ "$1" == config ]]; then return 1; fi; echo "INIT $*"; }; ensure_git_lfs_filters')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'INIT lfs install --skip-repo')
+
+    @unittest.skipIf(os.geteuid() == 0, 'root can read mode-000 files')
+    def test_unreadable_git_config_stops_before_lfs_and_resumes_without_reinstall(self):
+        with tempfile.TemporaryDirectory(prefix='git-permission-') as directory:
+            root = Path(directory)
+            system = root / 'gitconfig'
+            global_config = root / 'global'
+            system.write_text('[example]\nvalue = PRIVATE_SYSTEM_VALUE\n')
+            global_config.write_text('[example]\nvalue = PRIVATE_GLOBAL_VALUE\n[filter "lfs"]\n'
+                                     'clean = git-lfs clean -- %f\nsmudge = git-lfs smudge -- %f\n'
+                                     'process = git-lfs filter-process\nrequired = true\n')
+            before = (global_config.read_bytes(), global_config.stat().st_mtime_ns, global_config.stat().st_mode)
+            env = dict(HOME=directory, XDG_CONFIG_HOME=directory, GIT_CONFIG_SYSTEM=str(system),
+                       GIT_CONFIG_GLOBAL=str(global_config), HOMEBREW_PREFIX=directory,
+                       LC_ALL='C', NO_COLOR='1')
+            managed_git = root / 'opt/git/bin/git'
+            managed_git.parent.mkdir(parents=True)
+            managed_git.symlink_to(shutil.which('git'))
+            prefix = '''
+brew() { if [[ "$1" == list ]]; then return 0; fi; echo MUTATION; return 99; }
+git() { if [[ "$1" == lfs ]]; then echo MUTATION; return 99; fi; command git "$@"; }
+'''
+            try:
+                system.chmod(0)
+                # --version alone incorrectly considers this Git installation healthy.
+                healthy = self.run_shell('probe_formula git', env=env, cwd=directory)
+                self.assertEqual(healthy.returncode, 0, healthy.stderr)
+                for operation in ('step_run formula:git ensure_formula git', 'ensure_git_lfs_filters'):
+                    with self.subTest(operation=operation):
+                        failed = self.run_shell(prefix + operation + '; echo WRONG', env=env, cwd=directory)
+                        self.assertEqual(failed.returncode, 128, failed.stderr)
+                        self.assertIn('Permission denied', failed.stderr)
+                        self.assertIn('Repair the file named above', failed.stderr)
+                        self.assertNotIn('WRONG', failed.stdout)
+                        self.assertNotIn('MUTATION', failed.stdout)
+                        self.assertNotIn('PRIVATE_', failed.stdout + failed.stderr)
+                        self.assertEqual(system.stat().st_mode & 0o777, 0)
+            finally:
+                system.chmod(0o600)
+            resumed = self.run_shell(prefix + 'ensure_formula git; ensure_git_lfs_filters; echo "$STEP_ACTION"',
+                                     env=env, cwd=directory)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertEqual(resumed.stdout.strip(), 'skipped')
+            self.assertEqual(resumed.stderr, '')
+            self.assertEqual((global_config.read_bytes(), global_config.stat().st_mtime_ns,
+                              global_config.stat().st_mode), before)
+
+    @unittest.skipIf(os.geteuid() == 0, 'root can read mode-000 files')
+    def test_homebrew_git_config_checked_when_path_git_is_healthy(self):
+        with tempfile.TemporaryDirectory(prefix='brew-git-permission-') as directory:
+            root = Path(directory)
+            system = root / 'brew/etc/gitconfig'
+            global_config = root / 'global'
+            system.parent.mkdir(parents=True)
+            system.write_text('[example]\nvalue = PRIVATE_SYSTEM_VALUE\n')
+            global_config.write_text('[example]\nvalue = PRIVATE_GLOBAL_VALUE\n')
+            before = (global_config.read_bytes(), global_config.stat().st_mtime_ns,
+                      global_config.stat().st_mode)
+            real_git = shlex.quote(shutil.which('git'))
+            path_git = root / 'path/bin/git'
+            brewed_git = root / 'brew/bin/git'
+            managed_git = root / 'brew/opt/git/bin/git'
+            override_git = root / 'override/git'
+            for executable, config in ((path_git, root / 'absent'), (brewed_git, system),
+                                       (managed_git, system), (override_git, system)):
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_text('#!/bin/bash\nexport GIT_CONFIG_SYSTEM=' + shlex.quote(str(config)) +
+                                      '\nexec ' + real_git + ' "$@"\n')
+                executable.chmod(0o755)
+            env = dict(HOME=directory, HOMEBREW_PREFIX=str(root / 'brew'),
+                       GIT_CONFIG_GLOBAL=str(global_config), LC_ALL='C', NO_COLOR='1',
+                       PATH=str(path_git.parent) + os.pathsep + os.environ['PATH'])
+            mutation = root / 'brew-called'
+            stub = 'brew() { if [[ "$1" == list ]]; then return 0; fi; touch ' + shlex.quote(str(mutation)) + '; }; '
+            try:
+                system.chmod(0)
+                healthy = self.run_shell('git config --list >/dev/null; probe_formula git',
+                                         env=env, cwd=directory)
+                self.assertEqual(healthy.returncode, 0, healthy.stderr)
+                for operation in ('step_run formula:git ensure_formula git', 'ensure_git_lfs_filters',
+                                  'run_package_installer brew install --formula charmbracelet/tap/glow'):
+                    with self.subTest(operation=operation):
+                        failed = self.run_shell(stub + operation + '; echo WRONG', env=env, cwd=directory)
+                        self.assertEqual(failed.returncode, 128, failed.stderr)
+                        self.assertIn('Permission denied', failed.stderr)
+                        self.assertIn('using ' + str(brewed_git), failed.stderr)
+                        self.assertNotIn('PRIVATE_', failed.stdout + failed.stderr)
+                        self.assertNotIn('WRONG', failed.stdout)
+                        self.assertFalse(mutation.exists())
+                # Also check keg-only Git and an explicit Homebrew Git override.
+                brewed_git.unlink()
+                failed = self.run_shell('check_git_configuration', env=env, cwd=directory)
+                self.assertEqual(failed.returncode, 128, failed.stderr)
+                self.assertIn('using ' + str(managed_git), failed.stderr)
+                managed_git.unlink()
+                failed = self.run_shell('check_git_configuration',
+                                        env={**env, 'HOMEBREW_GIT_PATH': str(override_git)}, cwd=directory)
+                self.assertEqual(failed.returncode, 128, failed.stderr)
+                self.assertIn('using ' + str(override_git), failed.stderr)
+                brewed_git.symlink_to(override_git)
+                managed_git.symlink_to(override_git)
+            finally:
+                system.chmod(0o600)
+            resumed = self.run_shell(stub + 'ensure_formula git; echo "$STEP_ACTION"; '
+                                     'run_package_installer brew install --formula charmbracelet/tap/glow',
+                                     env=env, cwd=directory)
+            self.assertEqual(resumed.returncode, 0, resumed.stderr)
+            self.assertEqual(resumed.stdout.strip(), 'skipped')
+            self.assertTrue(mutation.exists())
+            mutation.unlink()
+            # Recheck immediately before later brew calls even if an earlier check passed.
+            try:
+                failed = self.run_shell(stub + 'check_git_configuration; chmod 000 ' + shlex.quote(str(system)) +
+                                        '; run_package_installer brew install --formula charmbracelet/tap/glow; echo WRONG',
+                                        env=env, cwd=directory)
+            finally:
+                system.chmod(0o600)
+            self.assertEqual(failed.returncode, 128, failed.stderr)
+            self.assertNotIn('WRONG', failed.stdout)
+            self.assertFalse(mutation.exists())
+            self.assertEqual((global_config.read_bytes(), global_config.stat().st_mtime_ns,
+                              global_config.stat().st_mode), before)
+
+    def test_broken_managed_git_is_repaired_even_when_path_git_is_healthy(self):
+        with tempfile.TemporaryDirectory(prefix='brew-git-binary-') as directory:
+            root = Path(directory)
+            managed_git = root / 'opt/git/bin/git'
+            managed_git.parent.mkdir(parents=True)
+            linked_git = root / 'bin/git'
+            linked_git.parent.mkdir()
+            linked_git.symlink_to(managed_git)
+            real_git = shutil.which('git')
+            for broken in (False, True):
+                with self.subTest(broken=broken):
+                    if broken:
+                        managed_git.write_text('#!/bin/bash\nexit 23\n')
+                        managed_git.chmod(0o755)
+                    env = {'HOMEBREW_PREFIX': directory, 'REAL_GIT': real_git}
+                    self.assertNotEqual(self.run_shell('probe_formula git', env=env).returncode, 0)
+                    result = self.run_shell('''
+brew() {
+  if [[ "$1" == list ]]; then return 0; fi
+  [[ "$*" == 'reinstall --formula homebrew/core/git' ]] || return 99
+  rm -f "$HOMEBREW_PREFIX/opt/git/bin/git"
+  ln -s "$REAL_GIT" "$HOMEBREW_PREFIX/opt/git/bin/git"
+  echo REPAIRED
+}
+ensure_formula git
+echo "$STEP_ACTION"
+''', env=env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.splitlines(), ['REPAIRED', 'repaired'])
+                    managed_git.unlink()
+
+    def test_git_configuration_probe_accepts_absent_files_and_reports_bad_includes(self):
+        with tempfile.TemporaryDirectory(prefix='git-config-') as directory:
+            root = Path(directory)
+            system = root / 'gitconfig'
+            included = root / 'included'
+            env = dict(HOME=directory, XDG_CONFIG_HOME=directory, GIT_CONFIG_SYSTEM=str(system),
+                       GIT_CONFIG_GLOBAL=str(root / 'global'), LC_ALL='C', NO_COLOR='1')
+            result = self.run_shell('check_git_configuration', env=env, cwd=directory)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout + result.stderr, '')
+            system.write_text('[include]\npath = ./included\n')
+            included.write_text('[invalid\n')
+            result = self.run_shell('check_git_configuration; echo WRONG', env=env, cwd=directory)
+            self.assertEqual(result.returncode, 128, result.stderr)
+            self.assertIn('/included', result.stderr)
+            self.assertIn('Repair the file named above', result.stderr)
+            self.assertNotIn('WRONG', result.stdout)
+
+    def test_git_lfs_initialization_failure_stops_its_step(self):
+        result = self.run_shell('brew() { return 0; }; probe_formula() { return 0; }; '
+                                'git() { if [[ "$1 $2" == "config --list" ]]; then return 0; fi; '
+                                'if [[ "$1" == config ]]; then return 1; fi; return 23; }; '
+                                'step_run formula:git-lfs ensure_formula git-lfs; echo WRONG')
+        self.assertEqual(result.returncode, 23)
+        self.assertNotIn('WRONG', result.stdout)
+
+    def test_unknown_agent_manager_is_preserved_even_with_update(self):
+        result = self.run_shell('UPDATE=true; agent_healthy() { return 0; }; '
+                                'brew() { echo WRONG; return 99; }; npm() { echo WRONG; return 99; }; '
+                                'codex() { echo version; }; check_agent codex; echo "$STEP_ACTION"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('preserved', result.stdout)
+        self.assertNotIn('WRONG', result.stdout)
+
+    def test_templates_before_agents_and_optional_extension_progress(self):
+        script = """
+activate_paths() { :; }
+check_install_target() { :; }
+network_check() { :; }
+bootstrap() { :; }
+ensure_formula() { :; }
+ensure_cask() { :; }
+ensure_ohmyzsh() { :; }
+ensure_kiro_shell() { :; }
+ensure_extension() { :; }
+git() { :; }
+ensure_git_lfs_filters() { :; }
+apply_configuration() { echo CONFIGURED; }
+check_agent() { echo "AGENT $1"; }
+verify_installation() { echo VERIFIED; }
+prepare_sogou_installer() { echo SOGOU-PREPARED; }
+execute_mode
+echo "TOTAL $COMPLETED_STEPS $STEP_TOTAL"
+"""
+        for enabled in ('false', 'true'):
+            result = self.run_shell(f'WITH_SOGOU={enabled}; ' + script)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertLess(result.stdout.index('CONFIGURED'), result.stdout.index('AGENT claude'))
+            self.assertLess(result.stdout.index('CONFIGURED'), result.stdout.index('AGENT codex'))
+            if enabled == 'true':
+                self.assertIn('TOTAL 54 54', result.stdout)
+                self.assertGreater(result.stdout.index('SOGOU-PREPARED'), result.stdout.index('VERIFIED'))
+            else:
+                self.assertIn('TOTAL 53 53', result.stdout)
+                self.assertNotIn('SOGOU-PREPARED', result.stdout)
+
+    def test_chrome_location_selection_and_no_duplicate_installation(self):
+        for system, user in [('true', 'false'), ('false', 'true'), ('true', 'true'), ('false', 'false')]:
+            script = f'SYSTEM={system}; USER_APP={user}; ' + """
+bundle_healthy() {
+  if [[ "$1" == '/Applications/Google Chrome.app' ]]; then [[ "$SYSTEM" == true ]];
+  elif [[ "$1" == "$HOME/Applications/Google Chrome.app" ]]; then [[ "$USER_APP" == true ]];
+  else return 1; fi
+}
+"""
+            result = self.run_shell(script + 'app_path "Google Chrome.app"')
+            user_selected = system == 'false' and user == 'true'
+            expected = str(Path.home() / 'Applications/Google Chrome.app') if user_selected else '/Applications/Google Chrome.app'
+            self.assertEqual(result.stdout.strip(), expected)
+            if system == user == 'false':
+                continue
+            for managed in ('false', 'true'):
+                for update in ('false', 'true'):
+                    run = self.run_shell(script + f'MANAGED={managed}; UPDATE={update}; ' + """
+brew() { if [[ "$1" == list ]]; then [[ "$MANAGED" == true ]]; else echo "MUTATE $*"; fi; }
+ensure_cask google-chrome 'Google Chrome.app'
+echo "ACTION $STEP_ACTION"
+""")
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    if not user_selected and managed == update == 'true':
+                        self.assertIn('MUTATE upgrade --cask homebrew/cask/google-chrome', run.stdout)
+                    else:
+                        self.assertNotIn('MUTATE', run.stdout)
+                        self.assertRegex(run.stdout, r'ACTION (preserved|skipped)')
+
+    def test_kiro_locations_versions_identity_and_manager_actions(self):
+        for compatible in ('/Applications/Kiro.app', str(Path.home() / 'Applications/Kiro.app')):
+            result = self.run_shell('COMPATIBLE=' + shlex.quote(compatible) + '; ' + """
+bundle_healthy() { return 0; }
+bundle_identifier() { echo dev.kiro.desktop; }
+bundle_version() { if [[ "$1" == "$COMPATIBLE" ]]; then echo 1.0.437; else echo 0.9.1; fi; }
+app_path Kiro.app
+""")
+            self.assertEqual(result.stdout.strip(), compatible)
+        for system, user in [('true', 'false'), ('false', 'true'), ('true', 'true'), ('false', 'false')]:
+            for version in ('0.9.1', '1.0.437', '2.0.0', 'invalid'):
+                for identity in ('dev.kiro.desktop', 'other.application'):
+                    script = f'SYSTEM={system}; USER_APP={user}; VERSION={version}; IDENTITY={identity}; ' + """
+bundle_healthy() {
+  if [[ "$1" == /Applications/Kiro.app ]]; then [[ "$SYSTEM" == true ]];
+  elif [[ "$1" == "$HOME/Applications/Kiro.app" ]]; then [[ "$USER_APP" == true ]];
+  else return 1; fi
+}
+bundle_version() { echo "$VERSION"; }
+bundle_identifier() { echo "$IDENTITY"; }
+"""
+                    selected_user = system == 'false' and user == 'true'
+                    result = self.run_shell(script + 'app_path Kiro.app')
+                    expected = str(Path.home() / 'Applications/Kiro.app') if selected_user else '/Applications/Kiro.app'
+                    self.assertEqual(result.stdout.strip(), expected)
+                    healthy = (system == 'true' or user == 'true') and version[0] in '12' and identity == 'dev.kiro.desktop'
+                    result = self.run_shell(script + 'app_healthy Kiro.app')
+                    self.assertEqual(result.returncode == 0, healthy, result.stderr)
+                    if not healthy and selected_user:
+                        result = self.run_shell(script + 'brew() { echo WRONG; }; ensure_cask kiro Kiro.app')
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertNotIn('WRONG', result.stdout)
+                    if not healthy:
+                        continue
+                    for managed in ('true', 'false'):
+                        for update in ('true', 'false'):
+                            result = self.run_shell(script + f'MANAGED={managed}; UPDATE={update}; ' + """
+brew() { if [[ "$1" == list ]]; then [[ "$MANAGED" == true ]]; else echo "MUTATE $*"; fi; }
+ensure_cask kiro Kiro.app
+""")
+                            self.assertEqual(result.returncode, 0, result.stderr)
+                            self.assertNotIn('MUTATE', result.stdout)
+        for version in ('0.9.1', 'invalid'):
+            result = self.run_shell(f'VERSION={version}; ' + """
+bundle_healthy() { [[ "$1" == /Applications/Kiro.app ]]; }
+bundle_identifier() { echo dev.kiro.desktop; }
+bundle_version() { if [[ -f "$TEST_STATE/healthy" ]]; then echo 1.0.437; else echo "$VERSION"; fi; }
+brew() { if [[ "$1" != list ]]; then echo "MUTATE $*"; touch "$TEST_STATE/healthy"; fi; }
+ensure_cask kiro Kiro.app
+echo "ACTION $STEP_ACTION"
+""")
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertNotIn('MUTATE', result.stdout)
+            self.assertIn('https://kiro.dev/downloads/', result.stderr)
+
+    def test_platform_contract(self):
+        for arch, version, uid, accepted in [('arm64', '26.6.2', 501, True), ('arm64', '27.0', 501, True),
+                                             ('arm64', '15.7', 501, False), ('x86_64', '26.6.2', 501, False),
+                                             ('arm64', '26.6.2', 0, False)]:
+            result = self.run_shell(f'uname() {{ echo {arch}; }}; sw_vers() {{ echo {version}; }}; '
+                                    f'id() {{ echo {uid}; }}; check_install_target')
+            self.assertEqual(result.returncode == 0, accepted)
+
+    def test_cli_invalid_arguments_and_side_effect_free_plan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'not-created'
+            result = subprocess.run([str(ROOT / 'setup.sh'), '--plan', '--log-dir', str(target)],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn('https://chatgpt.com/codex/install.sh', result.stdout)
+            self.assertFalse(target.exists())
+        for args in (['--unknown'], ['--plan', '--verify'], ['--config-dir'], ['--log-dir'], ['--diagnose', '--update'],
+                     ['--verify', '--with-sogou'], ['--diagnose', '--with-sogou']):
+            result = subprocess.run([str(ROOT / 'setup.sh'), *args], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+
+    def test_manifest_and_all_formula_probes(self):
+        expected = {'git', 'git-lfs', 'gh', 'go', 'node', 'python', 'uv', 'ripgrep', 'fd', 'bat',
+                    'fzf', 'autojump', 'zoxide', 'jq', 'yq', 'tmux', 'tree', 'git-delta', 'tig', 'wget',
+                    'htop', 'shellcheck', 'shfmt', 'ffmpeg', 'imagemagick',
+                    'charmbracelet/tap/glow', 'charmbracelet/tap/pop', 'charmbracelet/tap/gum', 'charmbracelet/tap/crush'}
+        packages = (ROOT / 'config/formulae.txt').read_text().split()
+        self.assertEqual(set(packages), expected)
+        self.assertEqual(len(packages), len(expected))
+        mapping = {'python': 'python3', 'ripgrep': 'rg', 'git-delta': 'delta', 'imagemagick': 'magick'}
+        script = (ROOT / 'scripts/verify.sh').read_text()
+        line = next(line for line in script.splitlines() if line.startswith('for executable in '))
+        actual = line.removeprefix('for executable in ').removesuffix('; do').split()
+        self.assertEqual(set(actual), {mapping.get(p, p.rsplit('/', 1)[-1]) for p in expected} | {'npm', 'claude', 'codex', 'kiro-cli', 'docker'})
+        for package in packages:
+            result = self.run_shell(f'formula_command {package}')
+            self.assertEqual(result.stdout.strip(), mapping.get(package, package.rsplit('/', 1)[-1]))
+
+
+
+if __name__ == '__main__':
+    unittest.main()
