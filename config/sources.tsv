@@ -4,6 +4,14 @@ codex	installer	https://chatgpt.com/codex/install.sh
 kiro-cli	installer	https://cli.kiro.dev/install
 chatgpt	documentation	https://learn.chatgpt.com/docs/app
 kiro	documentation	https://kiro.dev/downloads/
+chatgpt-download	distribution	https://persistent.oaistatic.com/codex-app-prod/Codex.dmg
+chatgpt-distribution	distribution	https://persistent.oaistatic.com/codex-app-prod/
+chatgpt-releases	metadata	https://persistent.oaistatic.com/codex-app-prod/appcast.xml
+kiro-distribution	distribution	https://prod.download.desktop.kiro.dev/
+kiro-cli-distribution	distribution	https://prod.download.cli.kiro.dev/stable/
+kiro-cli-releases	metadata	https://prod.download.cli.kiro.dev/stable/latest/manifest.json
+claude-releases	metadata	https://downloads.claude.ai/claude-code-releases/latest
+codex-releases	metadata	https://releases.openai.com/codex/channels/latest
 ohmyzsh	installer	https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh
 sogou-download	distribution	https://ime.gtimg.com/pc/
 homebrew-api	connectivity	https://formulae.brew.sh/api/formula/go.json
@@ -16,6 +24,11 @@ maintenance-catalog	metadata	https://formulae.brew.sh/api/
 maintenance-aliases	metadata	https://raw.githubusercontent.com/Homebrew/homebrew-core/HEAD/Aliases/
 maintenance-gallery	metadata	https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery
 maintenance-homebrew	metadata	https://api.github.com/repos/Homebrew/brew/releases/latest
+maintenance-homebrew-release	metadata	https://github.com/Homebrew/brew/releases/latest
 maintenance-setup	git	https://github.com/6ai/macOS-devenv.git
 maintenance-ohmyzsh	git	https://github.com/ohmyzsh/ohmyzsh.git
 maintenance-charm	metadata	https://raw.githubusercontent.com/charmbracelet/homebrew-tap/master/
+google-chrome-download	distribution	https://dl.google.com/chrome/mac/universal/stable/GGRO/googlechrome.dmg
+docker-desktop-download	distribution	https://desktop.docker.com/mac/main/arm64/Docker.dmg
+claude-desktop-releases	metadata	https://downloads.claude.ai/releases/darwin/universal/RELEASES.json
+claude-desktop-distribution	distribution	https://downloads.claude.ai/releases/darwin/universal/

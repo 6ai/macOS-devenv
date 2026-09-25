@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
+import importlib.util
 import os
 from pathlib import Path
 import plistlib
@@ -12,6 +13,10 @@ import shutil
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
+spec = importlib.util.spec_from_file_location('official_ai', ROOT / 'scripts/official_ai.py')
+official_ai = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(official_ai)
+
 STATES = ('current', 'update_available', 'ahead', 'missing', 'repair_needed', 'different',
           'preserved', 'manual', 'unknown')
 TEMPLATES = {
@@ -23,7 +28,7 @@ TEMPLATES = {
     'iterm2-profile.json': (None, 'Library/Application Support/iTerm2/DynamicProfiles/clean-setup.json', False),
     'vscode-settings.json': (None, 'Library/Application Support/Code/User/settings.json', True),
 }
-EXTERNAL_APPS = {'chatgpt', 'kiro', 'kiro-cli'}
+EXTERNAL_APPS = {'chatgpt', 'kiro', 'kiro-cli', 'claude-desktop'}
 
 
 def command(*args):
@@ -89,6 +94,26 @@ def public_json(url, payload=None):
     return json.loads(public_text(url, payload))
 
 
+def homebrew_release(sources):
+    try:
+        version = public_json(sources['maintenance-homebrew'])['tag_name']
+        if version_key(version) is None:
+            raise ValueError('Invalid Homebrew release version')
+        return version
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        # Public API access can be denied on shared networks. The official latest
+        # release redirect exposes the same stable tag without API authentication.
+        target = command('curl', '--disable', '--config', str(ROOT / 'config/download.curlrc'),
+                         '--fail', '--silent', '--location', '--head', '--output', os.devnull,
+                         '--retry', '0', '--max-time', '20', '--proto', '=https',
+                         '--proto-redir', '=https', '--write-out', '%{url_effective}',
+                         sources['maintenance-homebrew-release'])
+        match = re.fullmatch(r'https://github\.com/Homebrew/brew/releases/tag/(v?\d+(?:\.\d+)+)', target)
+        if not match:
+            raise ValueError('Invalid Homebrew release redirect')
+        return match[1]
+
+
 def gallery_versions(data):
     versions = {}
     for result in data['results']:
@@ -119,7 +144,7 @@ class Checker:
     def attempt(self, component, function, *args):
         try:
             return function(*args)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, official_ai.ET.ParseError, subprocess.SubprocessError):
             # Never expose raw command output, credentials, proxy URLs or private paths.
             self.issues.append({'component': component, 'reason': 'query_failed'})
             return None
@@ -215,14 +240,24 @@ class Checker:
             if data and (data.get('disabled') or data.get('deprecated')):
                 state, note = 'manual', 'Upstream formula is disabled/deprecated; review replacement before updating.'
             self.add('formula:' + name, installed, latest, 'homebrew', state, note)
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            names = ('chatgpt', 'kiro', 'kiro-cli', 'claude-desktop', 'claude', 'codex')
+            official = dict(zip(names, executor.map(
+                lambda name: self.attempt('official:' + name, official_ai.release, name, self.sources), names)))
         for name, app in casks:
             external = name in EXTERNAL_APPS
             data = catalog.get(('cask', name))
-            latest = data.get('version') if data else None
+            vendor = official.get(name) if external else None
+            latest = vendor.get('version') if vendor else (data.get('version') if data else None)
+            if vendor and vendor.get('build'):
+                latest += ',' + vendor['build']
             path = self.attempt('cask:' + name, shell, 'app_path', app)
             installed, state = None, None
             managed = not external and name in managed_casks and path == '/Applications/' + app
             manager = 'homebrew' if managed else 'original'
+            if external and path and (not Path(path).exists() or
+                    self.attempt('cask:' + name, official_ai.managed, name, Path(path), self.home)):
+                manager = 'native'
             if path is None:
                 state = 'unknown'
             elif Path(path).exists():
@@ -233,27 +268,28 @@ class Checker:
                         installed += ',' + str(info.get('CFBundleVersion', 'unknown'))
                     try:
                         shell('app_healthy', app)
-                        if external:
-                            state = 'manual'
                     except (OSError, subprocess.SubprocessError):
                         state = 'repair_needed'
                 else:
                     state = 'repair_needed'
             else:
-                state, manager = 'missing', 'original' if external else 'homebrew'
+                state, manager = 'missing', 'native' if external else 'homebrew'
             if data and (data.get('disabled') or data.get('deprecated')):
                 state = 'manual'
             self.add('cask:' + name, installed, latest, manager, state,
-                     'Local check only; install/update with the official vendor installer.' if external else
+                     'Official stable/latest metadata; default prepares desktop DMGs. --managed-desktop --update updates recorded apps; other copies use their own updater.' if external else
                      'Actual app version, including self-updates; user/unmanaged copies use their own updater.')
         for name in ('claude', 'codex'):
             executable = shutil.which(name)
             value = self.attempt('cli:' + name, command, name, '--version') if executable else None
             match = re.search(r'\d+(?:\.\d+)+(?:[-+][\w.]+)?', value or '')
             installed = match[0] if match else None
-            self.add('cli:' + name, installed, manager='original',
-                     status='manual' if installed else ('repair_needed' if executable else 'missing'),
-                     note='Local check only; install/update with the official vendor installer. Setup never migrates existing installations.')
+            owned = self.attempt('cli:' + name, official_ai.managed, name, self.home / '.local/bin' / name, self.home)
+            manager = 'native' if not executable or (owned and executable == str(self.home / '.local/bin' / name)) else 'original'
+            latest = official[name]['version'] if official.get(name) else None
+            self.add('cli:' + name, installed, latest, manager=manager,
+                     status=None if installed else ('repair_needed' if executable else 'missing'),
+                     note='Official latest release; setup updates its recorded native installs without migrating other managers.')
 
     def extensions(self):
         names = (self.root / 'config/vscode-extensions.txt').read_text().split()
@@ -314,7 +350,7 @@ class Checker:
                         self.sources['maintenance-ohmyzsh'], 'master')
         self.attempt('section:configurations', self.configurations)
         brew = self.attempt('homebrew', command, 'brew', '--version')
-        release = self.attempt('homebrew', lambda: public_json(self.sources['maintenance-homebrew'])['tag_name'])
+        release = self.attempt('homebrew', homebrew_release, self.sources)
         match = re.search(r'\d+(?:\.\d+)+', brew or '')
         self.add('homebrew', match[0] if match else None, release, 'homebrew',
                  note='brew update refreshes Homebrew metadata; it does not upgrade installed packages.')

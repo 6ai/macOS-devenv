@@ -78,10 +78,11 @@ class MaintenanceTests(unittest.TestCase):
         name = url.rsplit('/', 1)[1].removesuffix('.json')
         return {'name': name, 'versions': {'stable': '1.0.0'}, 'revision': 0, 'version': '1.0.0'}
 
-    def check(self, fetch=None, text_fetch=None):
-        with patch.dict(os.environ, {}, clear=True), patch.object(maintenance, 'command', self.command), \
+    def check(self, fetch=None, text_fetch=None, command=None):
+        with patch.dict(os.environ, {}, clear=True), patch.object(maintenance, 'command', command or self.command), \
                 patch.object(maintenance, 'shell', self.shell), patch.object(maintenance, 'public_json', fetch or self.fetch), \
                 patch.object(maintenance, 'public_text', side_effect=text_fetch or (lambda url: '  version \"1.0.0\"\n' if url.endswith('.rb') else '../Formula/p/python@3.14.rb')), \
+                patch.object(maintenance.official_ai, 'release', return_value={'version': '1.0.0'}), \
                 patch.object(maintenance.shutil, 'which', side_effect=lambda name: str(self.home / '.local/bin' / name)):
             return maintenance.Checker(self.root, self.home).run()
 
@@ -148,11 +149,41 @@ class MaintenanceTests(unittest.TestCase):
         rows = {item['component']: item for item in self.check(fetch)['items']}
         for name in ('cask:chatgpt', 'cask:kiro', 'cask:kiro-cli', 'cli:claude', 'cli:codex'):
             self.assertEqual((rows[name]['manager'], rows[name]['status'], rows[name]['latest']),
-                             ('original', 'manual', None))
+                             ('original', 'current', '1.0.0'))
         shutil.rmtree(self.home / 'Applications/ChatGPT.app')
         rows = {item['component']: item for item in self.check(fetch)['items']}
         self.assertEqual((rows['cask:chatgpt']['status'], rows['cask:chatgpt']['next_action']),
-                         ('missing', 'original_updater'))
+                         ('missing', 'setup'))
+
+    def test_official_release_failure_is_partial_without_losing_components(self):
+        checker = maintenance.Checker(self.root, self.home)
+        result = checker.attempt('official:chatgpt', lambda: (_ for _ in ()).throw(maintenance.official_ai.ET.ParseError('bad xml')))
+        self.assertIsNone(result)
+        self.assertEqual(checker.issues, [{'component': 'official:chatgpt', 'reason': 'query_failed'}])
+
+    def test_homebrew_api_denial_uses_official_stable_release_redirect(self):
+        sources = maintenance.Checker(self.root, self.home).sources
+        with patch.object(maintenance, 'public_json', side_effect=subprocess.CalledProcessError(22, ['curl'])), \
+                patch.object(maintenance, 'command', return_value='https://github.com/Homebrew/brew/releases/tag/7.0.6') as command:
+            self.assertEqual(maintenance.homebrew_release(sources), '7.0.6')
+            self.assertIn('--head', command.call_args.args)
+            self.assertEqual(command.call_args.args[-1], sources['maintenance-homebrew-release'])
+
+    def test_homebrew_api_success_does_not_request_fallback(self):
+        sources = maintenance.Checker(self.root, self.home).sources
+        with patch.object(maintenance, 'public_json', return_value={'tag_name': '7.0.6'}), \
+                patch.object(maintenance, 'command') as command:
+            self.assertEqual(maintenance.homebrew_release(sources), '7.0.6')
+            command.assert_not_called()
+
+    def test_homebrew_fallback_rejects_unexpected_redirects_and_reports_failure(self):
+        for target in ('https://example.com/7.0.6', 'https://github.com/Homebrew/brew/releases/latest',
+                       'https://github.com/Homebrew/brew/releases/tag/7.0.6-rc1'):
+            checker = maintenance.Checker(self.root, self.home)
+            with self.subTest(target=target), patch.object(maintenance, 'public_json', return_value={}), \
+                    patch.object(maintenance, 'command', return_value=target):
+                self.assertIsNone(checker.attempt('homebrew', maintenance.homebrew_release, checker.sources))
+                self.assertEqual(checker.issues, [{'component': 'homebrew', 'reason': 'query_failed'}])
 
     def test_version_comparison_full_supported_contract(self):
         cases = [(None, '1.0', 'missing'), ('1.0', None, 'unknown'), ('1.0', '1.0.0', 'current'),
@@ -213,7 +244,11 @@ class MaintenanceTests(unittest.TestCase):
     def test_partial_network_failure_keeps_all_items_and_no_private_errors(self):
         def fail(url, payload=None):
             raise OSError('secret-proxy-value must not appear')
-        report = self.check(fail)
+        def command(*args):
+            if args[0] == 'curl':
+                raise OSError('secret-proxy-value must not appear')
+            return self.command(*args)
+        report = self.check(fail, command=command)
         self.assertFalse(report['complete'])
         self.assertTrue(report['issues'])
         self.assertEqual(len(report['items']), len(self.check()['items']))

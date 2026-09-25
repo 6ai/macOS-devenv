@@ -259,7 +259,8 @@ class InstallerTests(unittest.TestCase):
                              GIT_CONFIG_SYSTEM=state + '/system', XDG_CONFIG_HOME=state + '/xdg')
             shell_env.update(env or {})
             shell_env['TEST_STATE'] = state
-            return subprocess.run(['bash', '-c', 'source "$1"; ' + script, 'test', str(ROOT / 'setup.sh')],
+            guard = 'python3() { echo "Unexpected Python installer invocation in shell test" >&2; return 99; }; '
+            return subprocess.run(['bash', '-c', 'source "$1"; ' + guard + script, 'test', str(ROOT / 'setup.sh')],
                                   input='', text=True, capture_output=True, cwd=cwd,
                                   env=shell_env)
 
@@ -311,57 +312,77 @@ ensure_cask example Never-Existing-Setup-Test-Example.app
                 else:
                     self.assertNotIn('MUTATE', result.stdout)
 
-    def test_ai_cli_checks_never_install_update_or_query_managers(self):
-        for name, installer in [('claude', 'https://claude.ai/install.sh'),
-                                ('codex', 'https://chatgpt.com/codex/install.sh')]:
-            for healthy in ('true', 'false'):
-                for update in ('true', 'false'):
-                    with self.subTest(name=name, healthy=healthy, update=update):
-                        script = f'HEALTHY={healthy}; UPDATE={update}; ' + """
-forbidden() { echo MUTATION >&2; return 99; }
-brew() { forbidden; }
-npm() { forbidden; }
-curl() { forbidden; }
-download_installer() { forbidden; }
-agent_healthy() { [[ "$HEALTHY" == true ]]; }
+    def test_ai_installation_dispatch_skips_healthy_and_propagates_failure(self):
+        commands = ('check_agent claude', 'check_agent codex',
+                    'ensure_cask chatgpt ChatGPT.app', 'ensure_cask kiro Kiro.app',
+                    "ensure_cask kiro-cli 'Kiro CLI.app'")
+        for command in commands:
+            for healthy, update, status in [('true', 'false', 0), ('false', 'false', 0),
+                                            ('true', 'true', 0), ('false', 'true', 23)]:
+                with self.subTest(command=command, healthy=healthy, update=update, status=status):
+                    result = self.run_shell(f'DESKTOP_MODE=managed; HEALTHY={healthy}; UPDATE={update}; STATUS={status}; ' + """
+brew() { echo WRONG >&2; return 99; }
+npm() { echo WRONG >&2; return 99; }
+app_path() { printf '/Applications/%s\n' "$1"; }
+agent_healthy() { [[ "$HEALTHY" == true || -f "$TEST_STATE/healthy" ]]; }
+app_healthy() { agent_healthy; }
 claude() { echo claude-version; }
 codex() { echo codex-version; }
-"""
-                        result = self.run_shell(script + f'check_agent {name}; echo "$STEP_ACTION"')
-                        self.assertEqual(result.returncode, 0 if healthy == 'true' else 1, result.stderr)
-                        self.assertNotIn('MUTATION', result.stdout + result.stderr)
-                        if healthy == 'true':
-                            self.assertIn('preserved', result.stdout)
-                        else:
-                            self.assertIn('curl -fsSL ' + installer, result.stderr)
-                            self.assertNotIn('preserved', result.stdout)
+python3() { echo "OFFICIAL $*" >&2; touch "$TEST_STATE/healthy"; echo installed; return "$STATUS"; }
+""" + command + '; echo "ACTION $STEP_ACTION"')
+                    self.assertEqual(result.returncode, status, result.stderr)
+                    self.assertNotIn('WRONG', result.stdout + result.stderr)
+                    if healthy == 'true' and update == 'false':
+                        self.assertNotIn('OFFICIAL', result.stderr)
+                        self.assertIn('ACTION preserved', result.stdout)
+                    else:
+                        self.assertIn('official_ai.py', result.stderr)
+                        self.assertEqual('--update' in result.stderr, update == 'true')
+                        self.assertEqual('--healthy' in result.stderr, healthy == 'true')
+                    if status:
+                        self.assertNotIn('ACTION', result.stdout)
 
-    def test_ai_apps_are_check_only_even_with_update_or_brew_receipts(self):
-        apps = [('chatgpt', 'ChatGPT.app', 'https://learn.chatgpt.com/docs/app'),
-                ('kiro', 'Kiro.app', 'https://kiro.dev/downloads/'),
-                ('kiro-cli', 'Kiro CLI.app', 'https://cli.kiro.dev/install')]
-        for name, app, source in apps:
-            for healthy in ('true', 'false'):
-                for update in ('true', 'false'):
-                    with self.subTest(name=name, healthy=healthy, update=update):
-                        script = f'HEALTHY={healthy}; UPDATE={update}; ' + """
-brew() { echo WRONG >&2; return 99; }
-curl() { echo WRONG >&2; return 99; }
+    def test_default_desktops_preserve_healthy_apps_and_prepare_missing_ones(self):
+        for healthy in ('true', 'false'):
+            result = self.run_shell(f'DESKTOP_MODE=download; HEALTHY={healthy}; ' + """
 app_healthy() { [[ "$HEALTHY" == true ]]; }
-"""
-                        result = self.run_shell(script + f'ensure_cask {name} {shlex.quote(app)}; echo "$STEP_ACTION"')
-                        self.assertEqual(result.returncode, 0 if healthy == 'true' else 1, result.stderr)
-                        self.assertNotIn('WRONG', result.stdout + result.stderr)
-                        if healthy == 'true':
-                            self.assertIn('preserved', result.stdout)
-                        else:
-                            self.assertIn(source, result.stderr)
+brew() { echo WRONG; return 91; }
+python3() { echo "DOWNLOAD $*" >&2; echo prepared; }
+ensure_cask chatgpt ChatGPT.app
+echo "ACTION $STEP_ACTION; MANUAL $MANUAL_STEPS"
+""")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('WRONG', result.stdout)
+            if healthy == 'true':
+                self.assertNotIn('DOWNLOAD', result.stderr)
+                self.assertIn('ACTION preserved', result.stdout)
+            else:
+                self.assertIn('desktop.py chatgpt', result.stderr)
+                self.assertIn('ACTION prepared; MANUAL  chatgpt', result.stdout)
+
+    def test_default_kiro_uses_vendor_installer_without_managed_hooks(self):
+        result = self.run_shell("""
+DESKTOP_MODE=download
+app_healthy() { [[ -f "$TEST_STATE/healthy" ]]; }
+download_installer() { echo "DOWNLOAD $1"; }
+run_package_installer() { echo "VENDOR $1"; touch "$TEST_STATE/healthy"; }
+python3() { echo WRONG; return 91; }
+agent_healthy() { return 1; }
+ensure_cask kiro-cli 'Kiro CLI.app'
+ensure_kiro_shell
+echo "MANUAL $MANUAL_STEPS"
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('DOWNLOAD kiro-cli', result.stdout)
+        self.assertIn('VENDOR /bin/bash', result.stdout)
+        self.assertIn('kiro-cli-onboarding', result.stdout)
+        self.assertNotIn('WRONG', result.stdout)
 
     def test_failures_do_not_continue(self):
         for script in [
             'brew() { return 1; }; ensure_formula go',
             'agent_healthy() { return 1; }; brew() { return 1; }; npm() { return 1; }; '
-            'download_installer() { echo WRONG; }; check_agent codex',
+            'python3() { return 23; }; check_agent codex',
             'brew() { return 0; }; probe_formula() { return 1; }; ensure_formula go']:
             result = self.run_shell(script + '; echo WRONG')
             self.assertNotEqual(result.returncode, 0)
@@ -454,7 +475,7 @@ bash -c '[[ "$HOMEBREW_NO_ASK" == 1 && -z "${HOMEBREW_ASK+x}" ]]'
     def test_entire_managed_package_surface_uses_official_names(self):
         formulae = (ROOT / 'config/formulae.txt').read_text().split()
         casks = [line.split('\t')[0] for line in (ROOT / 'config/casks.tsv').read_text().splitlines()
-                 if line.split('\t')[0] not in ('chatgpt', 'kiro', 'kiro-cli')]
+                 if line.split('\t')[0] not in ('chatgpt', 'kiro', 'kiro-cli', 'claude-desktop')]
         for kind, names in [('formula', formulae), ('cask', casks)]:
             for name in names:
                 for installed, healthy, update, operation in [
@@ -462,7 +483,7 @@ bash -c '[[ "$HOMEBREW_NO_ASK" == 1 && -z "${HOMEBREW_ASK+x}" ]]'
                     ('true', 'true', 'true', 'upgrade'), ('true', 'true', 'false', 'skip')]:
                     with self.subTest(kind=kind, name=name, operation=operation):
                         prefix = ('' if '/' in name else 'homebrew/core/') if kind == 'formula' else 'homebrew/cask/'
-                        script = f'INSTALLED={installed}; HEALTHY={healthy}; UPDATE={update}; EXPECTED={prefix}{name}; KIND={kind}; ' + '''
+                        script = f'DESKTOP_MODE=managed; INSTALLED={installed}; HEALTHY={healthy}; UPDATE={update}; EXPECTED={prefix}{name}; KIND={kind}; ' + '''
 brew() {
   [[ "$2" == "--$KIND" && "$3" == "$EXPECTED" && $# == 3 ]] || return 99
   case "$1" in
@@ -723,14 +744,6 @@ echo "$STEP_ACTION"
         self.assertEqual(result.returncode, 23)
         self.assertNotIn('WRONG', result.stdout)
 
-    def test_unknown_agent_manager_is_preserved_even_with_update(self):
-        result = self.run_shell('UPDATE=true; agent_healthy() { return 0; }; '
-                                'brew() { echo WRONG; return 99; }; npm() { echo WRONG; return 99; }; '
-                                'codex() { echo version; }; check_agent codex; echo "$STEP_ACTION"')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('preserved', result.stdout)
-        self.assertNotIn('WRONG', result.stdout)
-
     def test_templates_before_agents_and_optional_extension_progress(self):
         script = """
 activate_paths() { :; }
@@ -757,10 +770,10 @@ echo "TOTAL $COMPLETED_STEPS $STEP_TOTAL"
             self.assertLess(result.stdout.index('CONFIGURED'), result.stdout.index('AGENT claude'))
             self.assertLess(result.stdout.index('CONFIGURED'), result.stdout.index('AGENT codex'))
             if enabled == 'true':
-                self.assertIn('TOTAL 54 54', result.stdout)
+                self.assertIn('TOTAL 55 55', result.stdout)
                 self.assertGreater(result.stdout.index('SOGOU-PREPARED'), result.stdout.index('VERIFIED'))
             else:
-                self.assertIn('TOTAL 53 53', result.stdout)
+                self.assertIn('TOTAL 54 54', result.stdout)
                 self.assertNotIn('SOGOU-PREPARED', result.stdout)
 
     def test_chrome_location_selection_and_no_duplicate_installation(self):
@@ -780,7 +793,7 @@ bundle_healthy() {
                 continue
             for managed in ('false', 'true'):
                 for update in ('false', 'true'):
-                    run = self.run_shell(script + f'MANAGED={managed}; UPDATE={update}; ' + """
+                    run = self.run_shell(script + f'DESKTOP_MODE=managed; MANAGED={managed}; UPDATE={update}; ' + """
 brew() { if [[ "$1" == list ]]; then [[ "$MANAGED" == true ]]; else echo "MUTATE $*"; fi; }
 ensure_cask google-chrome 'Google Chrome.app'
 echo "ACTION $STEP_ACTION"
@@ -821,32 +834,20 @@ bundle_identifier() { echo "$IDENTITY"; }
                     result = self.run_shell(script + 'app_healthy Kiro.app')
                     self.assertEqual(result.returncode == 0, healthy, result.stderr)
                     if not healthy and selected_user:
-                        result = self.run_shell(script + 'brew() { echo WRONG; }; ensure_cask kiro Kiro.app')
+                        result = self.run_shell(script + 'python3() { return 1; }; brew() { echo WRONG; }; ensure_cask kiro Kiro.app')
                         self.assertNotEqual(result.returncode, 0)
                         self.assertNotIn('WRONG', result.stdout)
                     if not healthy:
                         continue
                     for managed in ('true', 'false'):
                         for update in ('true', 'false'):
-                            result = self.run_shell(script + f'MANAGED={managed}; UPDATE={update}; ' + """
+                            result = self.run_shell(script + f'DESKTOP_MODE=managed; MANAGED={managed}; UPDATE={update}; ' + """
 brew() { if [[ "$1" == list ]]; then [[ "$MANAGED" == true ]]; else echo "MUTATE $*"; fi; }
+python3() { echo preserved; }
 ensure_cask kiro Kiro.app
 """)
                             self.assertEqual(result.returncode, 0, result.stderr)
                             self.assertNotIn('MUTATE', result.stdout)
-        for version in ('0.9.1', 'invalid'):
-            result = self.run_shell(f'VERSION={version}; ' + """
-bundle_healthy() { [[ "$1" == /Applications/Kiro.app ]]; }
-bundle_identifier() { echo dev.kiro.desktop; }
-bundle_version() { if [[ -f "$TEST_STATE/healthy" ]]; then echo 1.0.437; else echo "$VERSION"; fi; }
-brew() { if [[ "$1" != list ]]; then echo "MUTATE $*"; touch "$TEST_STATE/healthy"; fi; }
-ensure_cask kiro Kiro.app
-echo "ACTION $STEP_ACTION"
-""")
-            self.assertEqual(result.returncode, 1, result.stderr)
-            self.assertNotIn('MUTATE', result.stdout)
-            self.assertIn('https://kiro.dev/downloads/', result.stderr)
-
     def test_platform_contract(self):
         for arch, version, uid, accepted in [('arm64', '26.6.2', 501, True), ('arm64', '27.0', 501, True),
                                              ('arm64', '15.7', 501, False), ('x86_64', '26.6.2', 501, False),
@@ -880,7 +881,7 @@ echo "ACTION $STEP_ACTION"
         script = (ROOT / 'scripts/verify.sh').read_text()
         line = next(line for line in script.splitlines() if line.startswith('for executable in '))
         actual = line.removeprefix('for executable in ').removesuffix('; do').split()
-        self.assertEqual(set(actual), {mapping.get(p, p.rsplit('/', 1)[-1]) for p in expected} | {'npm', 'claude', 'codex', 'kiro-cli', 'docker'})
+        self.assertEqual(set(actual), {mapping.get(p, p.rsplit('/', 1)[-1]) for p in expected} | {'npm', 'claude', 'codex'})
         for package in packages:
             result = self.run_shell(f'formula_command {package}')
             self.assertEqual(result.stdout.strip(), mapping.get(package, package.rsplit('/', 1)[-1]))

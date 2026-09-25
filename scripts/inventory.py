@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 from configure import kiro_policy_status
+from desktop import APPS as MANUAL_APPS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,14 +22,31 @@ def inventory():
     data = json.loads(output('brew', 'info', '--json=v2', '--formula', *references))
     formulae = {item['name']: [entry['version'] for entry in item['installed']]
                 for item in data['formulae']}
-    apps = {}
+    apps, pending = {}, []
+    allow_prepared = os.environ.get('SETUP_ALLOW_PREPARED_DESKTOPS') == '1'
     for line in (ROOT / 'config/casks.tsv').read_text().splitlines():
         token, app = line.split('\t')
         path = output('/bin/bash', '-c', 'source "$1"; app_path "$2"',
                       'inventory', str(ROOT / 'setup.sh'), app)
+        if allow_prepared and token in MANUAL_APPS:
+            healthy = subprocess.run(['/bin/bash', '-c', 'source "$1"; app_healthy "$2"',
+                                      'inventory', str(ROOT / 'setup.sh'), app],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            if not healthy:
+                apps[token] = None
+                pending.append(token)
+                continue
         apps[token] = output('/usr/libexec/PlistBuddy', '-c', 'Print :CFBundleShortVersionString',
                              f'{path}/Contents/Info.plist')
-    tools = {name: output(name, '--version').splitlines()[0] for name in ('claude', 'codex', 'kiro-cli', 'docker')}
+    tools = {}
+    for name in ('claude', 'codex', 'kiro-cli', 'docker'):
+        try:
+            tools[name] = output(name, '--version').splitlines()[0]
+        except (OSError, subprocess.CalledProcessError):
+            if not allow_prepared or name not in ('kiro-cli', 'docker'):
+                raise
+            tools[name] = None
+
     tools['go'] = output('go', 'version')
     extension_lines = output('/bin/bash', '-c', 'source "$1"; code_cli --list-extensions --show-versions',
                              'inventory', str(ROOT / 'setup.sh')).splitlines()
@@ -46,6 +64,7 @@ def inventory():
         revision = 'archive'
     return {'schema_version': 1, 'script_version': (ROOT / 'VERSION').read_text().strip(),
             'revision': revision, 'formulae': formulae, 'applications': apps, 'tools': tools,
+            'pending_applications': pending,
             'vscode_extensions': extensions, 'ohmyzsh_revision': omz_revision,
             'kiro_permission_template': kiro_policy_status(Path.home())}
 

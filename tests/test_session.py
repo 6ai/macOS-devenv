@@ -37,7 +37,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         report = self.reports()[0]
         schema = json.loads((ROOT / 'docs/result.schema.json').read_text())
-        self.assertEqual(set(report), set(schema['required']))
+        self.assertTrue(set(schema['required']) <= set(report) <= set(schema['properties']))
         self.assertEqual(report['status'], 'success')
         self.assertEqual(report['completed_steps'], 1)
         self.assertEqual(report['total_steps'], 1)
@@ -52,6 +52,16 @@ class SessionTests(unittest.TestCase):
                                            'hardware_model', 'memory_bytes', 'proxy_configured'})
         self.assertTrue(environment['proxy_configured'])
         self.assertIn('Result: success', next(self.logs.glob('*/run.log')).read_text())
+
+    def test_prepared_desktops_are_reported_as_manual_work(self):
+        result = self.run_session('DESKTOP_MODE=download; MANUAL_STEPS=" chatgpt docker-desktop"; '
+                                  'execute_mode() { STEP_TOTAL=1; step_run demo echo prepared; }')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = self.reports()[0]
+        self.assertEqual(report['desktop_mode'], 'download')
+        self.assertEqual(report['manual_steps'], ['chatgpt', 'docker-desktop'])
+        self.assertIn('[MANUAL]', result.stdout)
+        self.assertIn('still need your action', result.stdout)
 
     def test_failure_and_resume_use_actual_state(self):
         marker = shlex.quote(str(self.root / 'installed'))

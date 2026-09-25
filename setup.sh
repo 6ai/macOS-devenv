@@ -4,6 +4,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 MODE=install
 UPDATE=false
 WITH_SOGOU=false
+DESKTOP_MODE=${DESKTOP_MODE:-download}
+MANUAL_STEPS=
 CONFIG_DIR="$ROOT/config"
 LOG_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/macos-setup"
 # shellcheck source=scripts/session.sh
@@ -13,11 +15,13 @@ source "$ROOT/scripts/editor.sh"
 
 usage() {
   cat <<'HELP'
-Usage: ./setup.sh [MODE] [--update] [--with-sogou] [--config-dir DIR] [--log-dir DIR]
+Usage: ./setup.sh [MODE] [--update] [--managed-desktop] [--with-sogou] [--config-dir DIR] [--log-dir DIR]
 Default: install missing tools, repair broken managed installs, preserve healthy tools.
-AI apps/CLIs: check local installations only; install/update separately with official installers.
+Default desktop policy: prepare official DMGs for manual installation; iTerm2/VS Code use casks.
+AI CLIs use official installers. Healthy existing tools are preserved.
 --plan            Print the plan; no writes or downloads.
---update          Explicitly update managed tools, excluding AI prerequisites (install mode only).
+--update          Update managed tools and refresh desktop DMGs (install mode only).
+--managed-desktop Automatically place desktop apps and configure Kiro hooks (explicit opt-in).
 --check-updates   Report available versions and configuration drift; never upgrade.
 --with-sogou      Optional extension: prepare official Sogou ZIP for manual installation.
 --configure-only  Apply configuration only (Python 3.11+).
@@ -219,7 +223,7 @@ check_git_configuration() {
       code=$?
     fi
     ui_print error "[FAILED] Git configuration check failed using $executable. Repair the file named above, then rerun the same setup command." >&2
-    ui_print info '[INFO] For Permission denied, inspect the exact path and parent directories with ls -lde. See README: Git configuration access.' >&2
+    ui_print info '[INFO] For Permission denied, inspect the exact path and parent directories with ls -lde. See docs/troubleshooting.md: Git configuration access.' >&2
     return "$code"
   done
   return 0
@@ -290,6 +294,14 @@ app_path() {
       fi
     done
   fi
+  if [[ "$app" == Claude.app ]]; then
+    for candidate in /Applications/Claude.app "$HOME/Applications/Claude.app"; do
+      if bundle_healthy "$candidate" && [[ $(bundle_identifier "$candidate") == com.anthropic.claudefordesktop ]]; then
+        printf '%s\n' "$candidate"
+        return
+      fi
+    done
+  fi
   if [[ "$app" == ChatGPT.app ]]; then
     for candidate in /Applications/ChatGPT.app "$HOME/Applications/ChatGPT.app" /Applications/Codex.app "$HOME/Applications/Codex.app"; do
       if bundle_healthy "$candidate" && [[ $(bundle_identifier "$candidate") == com.openai.codex ]]; then
@@ -310,6 +322,9 @@ app_healthy() {
   if [[ "$app" == ChatGPT.app ]]; then
     [[ $(bundle_identifier "$(app_path "$app")") == com.openai.codex ]] || return 1
   fi
+  if [[ "$app" == Claude.app ]]; then
+    [[ $(bundle_identifier "$(app_path "$app")") == com.anthropic.claudefordesktop ]] || return 1
+  fi
   if [[ "$app" == Kiro.app ]]; then
     kiro_bundle_healthy "$(app_path "$app")" || return 1
   fi
@@ -323,12 +338,55 @@ app_healthy() {
   fi
 }
 
+manual_desktop() {
+  case "$1" in docker-desktop | google-chrome | chatgpt | kiro | claude-desktop) return 0 ;; esac
+  return 1
+}
+
+prepare_desktop() {
+  local package=$1 app=$2
+  local args=("$1")
+  if app_healthy "$app" && [[ "$UPDATE" == false ]]; then
+    echo "Preserving $app; use its own updater."
+    STEP_ACTION=preserved
+    return
+  fi
+  if [[ "$UPDATE" == true ]]; then args+=(--update); fi
+  STEP_ACTION=$(python3 "$ROOT/scripts/desktop.py" "${args[@]}")
+  MANUAL_STEPS="$MANUAL_STEPS $package"
+}
+
+ensure_vendor_kiro() {
+  local installer
+  if app_healthy 'Kiro CLI.app'; then
+    echo 'Preserving Kiro CLI; its official app/CLI handles updates and onboarding.'
+    STEP_ACTION=preserved
+    return
+  fi
+  # Keep the vendor's own replacement prompts, launch and integration behavior.
+  installer=$(mktemp)
+  download_installer kiro-cli "$installer"
+  run_package_installer /bin/bash "$installer"
+  rm -f "$installer"
+  hash -r
+  app_healthy 'Kiro CLI.app' || fail 'Kiro official installer did not produce a runnable application.'
+  STEP_ACTION=installed
+}
+
 ensure_cask() {
   local package=$1 app=$2
-  # These vendor-managed tools are prerequisites, even if brew has an old receipt.
+  if [[ "$DESKTOP_MODE" == download ]] && manual_desktop "$package"; then
+    prepare_desktop "$package" "$app"
+    return
+  fi
+  if [[ "$package" == kiro-cli && "$DESKTOP_MODE" == download ]]; then
+    ensure_vendor_kiro
+    return
+  fi
+  # Resolve AI installations directly from their official vendor sources.
   case "$package" in
-    chatgpt | kiro | kiro-cli)
-      check_external_app "$package" "$app"
+    chatgpt | kiro | kiro-cli | claude-desktop)
+      ensure_official_app "$package" "$app"
       return
       ;;
   esac
@@ -375,51 +433,59 @@ install_packages() {
 
 agent_healthy() { "$1" --version >/dev/null 2>&1; }
 
-official_install_hint() {
-  local name=$1 interpreter='bash' url
-  case "$name" in
-    claude | codex | kiro-cli)
-      if [[ "$name" == codex ]]; then interpreter='sh'; fi
-      url=$(installer_url "$name")
-      printf 'Install with the official command, then rerun setup:\n  curl -fsSL %s | %s\n' "$url" "$interpreter" >&2
-      ;;
-    chatgpt | kiro)
-      url=$(source_url "$name" documentation)
-      printf 'Install the desktop app from the official download page, then rerun setup:\n  %s\n' "$url" >&2
-      ;;
-    *) fail "No official installation instructions for $name" ;;
-  esac
-}
-
-check_external_app() {
-  local name=$1 app=$2
+ensure_official_app() {
+  local app=$2
+  local args=("$1" --destination "$(app_path "$2")")
   if app_healthy "$app"; then
-    STEP_ACTION=preserved
-    echo "$app is installed; installation and updates are managed by the vendor."
-    return
+    if [[ "$UPDATE" == false ]]; then
+      STEP_ACTION=preserved
+      echo "$app is installed and healthy."
+      return
+    fi
+    args+=(--healthy)
   fi
-  official_install_hint "$name"
-  fail "$app is missing, incomplete or incompatible. Complete the official installation first."
+  if [[ "$UPDATE" == true ]]; then args+=(--update); fi
+  STEP_ACTION=$(python3 "$ROOT/scripts/official_ai.py" "${args[@]}")
+  app_healthy "$app" || fail "Official installation did not produce a healthy $app."
 }
 
 check_agent() {
   local name=$1
+  local args=("$1")
   if agent_healthy "$name"; then
-    STEP_ACTION=preserved
-    "$name" --version
-    return
+    if [[ "$UPDATE" == false ]]; then
+      STEP_ACTION=preserved
+      "$name" --version
+      return
+    fi
+    args+=(--healthy)
   fi
-  official_install_hint "$name"
-  fail "$name is missing or not runnable. Complete the official installation first."
+  if [[ "$UPDATE" == true ]]; then args+=(--update); fi
+  STEP_ACTION=$(python3 "$ROOT/scripts/official_ai.py" "${args[@]}")
+  hash -r
+  agent_healthy "$name" || fail "Official installation did not produce a runnable $name."
 }
 
 ensure_kiro_shell() {
+  if [[ "$DESKTOP_MODE" == download ]]; then
+    echo 'Kiro shell integration is handled by its official app. Complete onboarding there.'
+    STEP_ACTION=preserved
+    if ! agent_healthy kiro-cli; then MANUAL_STEPS="$MANUAL_STEPS kiro-cli-onboarding"; fi
+    return
+  fi
   STEP_ACTION=$(python3 "$ROOT/scripts/kiro-shell.py" --app "$(app_path 'Kiro CLI.app')")
   echo 'Kiro Zsh hooks ready. First launch and system permissions remain manual; see README.'
 }
 
 apply_configuration() { python3 "$ROOT/scripts/configure.py" --config-dir "$CONFIG_DIR"; }
-verify_installation() { /bin/bash "$ROOT/scripts/verify.sh"; }
+verify_installation() {
+  export DESKTOP_MODE
+  if [[ "$MODE" == install && "$DESKTOP_MODE" == download ]]; then
+    SETUP_ALLOW_PREPARED_DESKTOPS=1 /bin/bash "$ROOT/scripts/verify.sh"
+  else
+    SETUP_ALLOW_PREPARED_DESKTOPS='' /bin/bash "$ROOT/scripts/verify.sh"
+  fi
+}
 prepare_sogou_installer() {
   python3 "$ROOT/scripts/prepare-sogou.py"
   STEP_ACTION=prepared
@@ -486,6 +552,10 @@ main() {
         UPDATE=true
         shift
         ;;
+      --managed-desktop)
+        DESKTOP_MODE=managed
+        shift
+        ;;
       --with-sogou)
         WITH_SOGOU=true
         shift
@@ -504,13 +574,16 @@ main() {
   done
   [[ "$UPDATE" == false || "$MODE" == install || "$MODE" == plan ]] || fail '--update is only valid for installation or --plan.'
   [[ "$WITH_SOGOU" == false || "$MODE" == install || "$MODE" == plan ]] || fail '--with-sogou is only valid for installation or --plan.'
+  [[ "$DESKTOP_MODE" == download || "$DESKTOP_MODE" == managed ]] || fail "Invalid desktop mode: $DESKTOP_MODE"
   [[ -d "$CONFIG_DIR" ]] || fail "Missing configuration directory: $CONFIG_DIR"
   if [[ "$MODE" == plan ]]; then
-    echo "Mode: install; update existing tools: $UPDATE"
+    echo "Mode: install; update existing tools: $UPDATE; desktop mode: $DESKTOP_MODE"
     cat "$ROOT/config/formulae.txt" "$ROOT/config/casks.tsv" "$ROOT/config/vscode-extensions.txt" "$ROOT/config/sources.tsv"
     echo "Configuration templates: $CONFIG_DIR"
-    echo 'AI tools are check-only, including --update: ChatGPT, Kiro IDE/CLI, Claude Code and Codex CLI.'
-    echo 'Install missing AI tools separately from their official installers before running setup.'
+    echo 'Default: official desktop DMGs in ~/Downloads/macos-setup; install and onboard manually.'
+    echo 'iTerm2/VS Code use official casks; AI CLIs use vendor installers.'
+    echo '--managed-desktop opts into automatic desktop placement and Kiro shell integration.'
+    echo '--update refreshes recorded official installations; existing unmanaged copies are preserved.'
     echo "Logs: $LOG_ROOT"
     if [[ "$WITH_SOGOU" == true ]]; then
       echo "Final step: prepare official Sogou ZIP in $HOME/Downloads/macos-setup; install manually."

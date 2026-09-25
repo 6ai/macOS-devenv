@@ -129,7 +129,7 @@ step_run() {
 }
 
 finish_session() {
-  local code=$1 status=failed
+  local code=$1 status=failed component separator=
   trap - EXIT
   [[ "$code" -ne 0 ]] || status=success
   if [[ "$code" -ne 0 ]]; then
@@ -144,6 +144,15 @@ finish_session() {
     json_string "$CURRENT_STEP"
     printf ',"script_version":'
     json_string "$(cat "$ROOT/VERSION")"
+    printf ',"desktop_mode":'
+    json_string "${DESKTOP_MODE:-download}"
+    printf ',"manual_steps":['
+    for component in ${MANUAL_STEPS:-}; do
+      printf '%s' "$separator"
+      json_string "$component"
+      separator=,
+    done
+    printf ']'
     printf ',"started_at":'
     json_string "$STARTED_AT"
     printf ',"finished_at":'
@@ -157,6 +166,11 @@ finish_session() {
   fi
   printf '\n'
   if [[ "$code" == 0 ]]; then
+    if [[ -n "${MANUAL_STEPS:-}" ]]; then
+      HAS_WARNINGS=true
+      ui_print warn "[MANUAL] Prepared installers / onboarding still need your action:$MANUAL_STEPS"
+      ui_print info '[INFO] Open ~/Downloads/macos-setup, follow the vendor installers, then run ./setup.sh --verify.'
+    fi
     if [[ "$HAS_WARNINGS" == true ]]; then
       ui_print warn "[DONE] Result: $status (with setup warnings). Completed: $COMPLETED_STEPS/$STEP_TOTAL. Logs: $RUN_DIR"
     else
@@ -283,7 +297,7 @@ run_session() {
     # Record the actual worker, so killing only the logging supervisor cannot unlock a live installer.
     /bin/bash -c 'printf "%s\n" "$PPID"' >"$lock_dir/owner.pid"
     record_environment
-    ui_print info "[INFO] macOS Setup $(cat "$ROOT/VERSION") | mode=$MODE | update=$UPDATE"
+    ui_print info "[INFO] macOS Setup $(cat "$ROOT/VERSION") | mode=$MODE | update=$UPDATE | desktop=${DESKTOP_MODE:-download}"
     execute_mode
   ) 2>&1 | tee /dev/fd/4 | awk -f "$ROOT/scripts/plain-log.awk" >"$RUN_DIR/run.log"
   statuses=("${PIPESTATUS[@]}")

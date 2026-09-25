@@ -22,13 +22,15 @@
 | --- | --- | --- |
 | Homebrew 自身 | 当前命令版本对比官方 GitHub release | `brew update`；刷新 Homebrew 和包元数据，不等于升级已安装软件 |
 | 所有声明的 formula | 本机已安装版本对比实时 Homebrew stable API，包含 `_revision`、官方动态别名与 pin；识别 tmux 字母后缀和 ImageMagick 数字补丁号 | `./setup.sh --update`；保留 pin，停用/弃用包先审阅替代项 |
-| 非 AI 桌面应用 | 读取实际 app bundle 版本，对比当前 Cask；记录应用自行更新后的真实版本 | 系统目录受管项走 `--update`；用户目录和原安装器管理的副本使用应用自己的更新器 |
-| ChatGPT、Kiro IDE/CLI、Claude / Codex CLI | 只检查本地应用/命令，记录实际版本；不查询 Homebrew 参考版本，健康时为 `manual` | 自行使用官方安装器或应用更新器；普通安装和 `--update` 均不接管 |
+| 非 AI 桌面应用 | 读取实际 app bundle 版本，对比当前 Cask；记录应用自行更新后的真实版本 | 默认 Chrome/Docker 刷新 DMG；托管模式的受管 cask 才自动升级。已有外部副本使用应用自己的更新器 |
+| ChatGPT、Claude Desktop、Kiro IDE/CLI、Claude / Codex CLI | 实际版本对比官方最新/stable 元数据；不查询 Homebrew 参考版本 | 默认桌面准备 DMG，CLI 使用官方脚本；`--managed-desktop --update` 更新记录的 app，默认 Kiro CLI 由官方应用更新 |
 | 八项 VS Code 扩展 | Marketplace 查询，排除预发布和非 arm64/通用包，列出 VS Code 引擎要求 | `--update` 调用官方 VS Code CLI；实际兼容版本由 VS Code 选择 |
 | Oh My Zsh | 官方 origin 的远端 master SHA 与本地 SHA、本地改动状态 | `--update` 仅对干净的官方 checkout 做快进更新 |
 | 本安装仓库 | 已确认的 origin/main SHA 与本地 SHA、本地改动状态 | 人工审阅后 `git pull --ff-only`，见下节 |
 | 七份配置模板 | 对比所选模板与安装位置的字节，仅报告相同/不同/缺失 | 受管模板审阅后 `--configure-only`；私人 AI/VS Code 文件继续保留 |
 | macOS / 固件 | 报告提醒人工检查系统软件更新 | 系统设置 → 通用 → 软件更新；留出重启窗口 |
+
+Homebrew 自身版本优先查询官方 GitHub API；接口失败时读取官方 latest release 的跳转目标，不需要提供访问令牌。两个入口均失败时仍报告 unknown，不把查询失败当作最新。
 
 Homebrew 目录是本项目的发行版本基准，可能晚于供应商原生通道；不能把目录版本冒充所有渠道的最新版本。已安装版本领先时标为 `ahead`，不建议降级。无法可靠比较的预发布或特殊版本标为 `manual`。扩展报告给出当前稳定发行候选与引擎要求，不声称它一定兼容旧编辑器；先更新 VS Code，再由其官方安装器选择兼容版本。查询只携带公开扩展 ID，不发送工作区、代码或私人扩展列表。
 
@@ -39,10 +41,10 @@ Homebrew 目录是本项目的发行版本基准，可能晚于供应商原生�
 | `current` | 与本次参考版本/模板相同；仍需独立验收可用性 |
 | `update_available` | 有可比较的新版本；阅读更新说明，安排升级 |
 | `ahead` | 本机领先参考目录，保留；不要为对齐目录降级 |
-| `missing` / `repair_needed` | 受管工具跑普通 `./setup.sh` 修复；上述 AI 工具及非受管 app 使用官方/原安装器 |
+| `missing` / `repair_needed` | 受管工具跑普通 `./setup.sh` 修复；CLI 使用官方脚本；默认缺失桌面应用下载 DMG，托管模式才自动放置；未知来源损坏副本使用原安装器 |
 | `different` | 模板或 Git revision 有差异，先审阅；Git 差异可能是领先、落后或分叉 |
 | `preserved` | 私人 AI/编辑器配置不同，正常保留；不会因重跑自动覆盖 |
-| `manual` | AI 工具、pin、停用包、自定义 origin、特殊版本或系统更新，需要人工维护 |
+| `manual` | pin、停用包、自定义 origin、特殊版本或系统更新，需要人工维护 |
 | `unknown` | 查询失败或数据不足，修复网络/工具后重查；不能据此判定最新 |
 
 报告中的 `next_action` 是建议类别，绝不直接执行其中的文本。`setup` 对应普通安装/修复；`update` 对应明确升级；`original_updater` 用原管理器；`review` 先审阅；`none` 无版本操作。修复配置缺失时也可只运行 `--configure-only`。`attention_required` 包含人工检查项，不仅指有新版；准确的更新数量看 `summary.update_available`。
@@ -53,6 +55,8 @@ Homebrew 目录是本项目的发行版本基准，可能晚于供应商原生�
 git status --short
 git diff                              # 先确认自己的修改已保存
 git pull --ff-only                     # 不强制覆盖、不重置私人修改
+git fetch --tags
+git describe --tags --exact-match       # 正式发布提交应有 v<VERSION> tag
 ./setup.sh --plan
 ./setup.sh --check-updates
 ```
