@@ -4,6 +4,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 MODE=install
 UPDATE=false
 WITH_SOGOU=false
+# Internal scope propagated to verification subprocesses; main requires explicit opt-in.
+WITH_CLAUDE=${SETUP_WITH_CLAUDE:-false}
 DESKTOP_MODE=${DESKTOP_MODE:-download}
 MANUAL_STEPS=
 CONFIG_DIR="$ROOT/config"
@@ -15,7 +17,7 @@ source "$ROOT/scripts/editor.sh"
 
 usage() {
   cat <<'HELP'
-Usage: ./setup.sh [MODE] [--update] [--managed-desktop] [--with-sogou] [--config-dir DIR] [--log-dir DIR]
+Usage: ./setup.sh [MODE] [--update] [--managed-desktop] [--with-sogou] [--with-claude] [--config-dir DIR] [--log-dir DIR]
 Default: install missing tools, repair broken managed installs, preserve healthy tools.
 Default desktop policy: prepare official DMGs for manual installation; iTerm2/VS Code use casks.
 AI CLIs use official installers. Healthy existing tools are preserved.
@@ -23,6 +25,7 @@ AI CLIs use official installers. Healthy existing tools are preserved.
 --update          Update managed tools and refresh desktop DMGs (install mode only).
 --managed-desktop Automatically place desktop apps and configure Kiro hooks (explicit opt-in).
 --check-updates   Report available versions and configuration drift; never upgrade.
+--with-claude     Include Claude Desktop and Claude Code CLI (disabled by default).
 --with-sogou      Optional extension: prepare official Sogou ZIP for manual installation.
 --configure-only  Apply configuration only (Python 3.11+).
 --verify          Check packages, executables, applications and configuration.
@@ -73,6 +76,8 @@ download_installer() {
   url=$(installer_url "$component")
   curl --config "$ROOT/config/download.curlrc" --fail --show-error --location --retry 3 --connect-timeout 15 --max-time 180 "$url" -o "$destination.part"
   mv "$destination.part" "$destination"
+  # Called inside run_session; RUN_DIR is intentionally scoped to that subshell.
+  # shellcheck disable=SC2031
   if [[ -n "$RUN_DIR" ]]; then
     printf '%s\t%s\n' "$component" "$(shasum -a 256 "$destination" | awk '{print $1}')" >>"$RUN_DIR/downloads.tsv"
   fi
@@ -352,6 +357,7 @@ prepare_desktop() {
     return
   fi
   if [[ "$UPDATE" == true ]]; then args+=(--update); fi
+  echo "Preparing the official DMG for $app; install it from Downloads after setup finishes."
   STEP_ACTION=$(python3 "$ROOT/scripts/desktop.py" "${args[@]}")
   MANUAL_STEPS="$MANUAL_STEPS $package"
 }
@@ -427,17 +433,23 @@ install_packages() {
   done 3<"$ROOT/config/formulae.txt"
   while IFS=$'\t' read -r -u 3 package app; do
     [[ -n "$package" ]] || continue
+    if [[ "$package" == claude-desktop && "$WITH_CLAUDE" != true ]]; then continue; fi
     step_run "cask:$package" ensure_cask "$package" "$app"
   done 3<"$ROOT/config/casks.tsv"
 }
 
 agent_healthy() { "$1" --version >/dev/null 2>&1; }
 
+official_install_pending() {
+  local path="${XDG_STATE_HOME:-$HOME/.local/state}/macos-setup/official-installs/$1.pending.json"
+  [[ -e "$path" || -L "$path" ]]
+}
+
 ensure_official_app() {
   local app=$2
   local args=("$1" --destination "$(app_path "$2")")
   if app_healthy "$app"; then
-    if [[ "$UPDATE" == false ]]; then
+    if [[ "$UPDATE" == false ]] && ! official_install_pending "$1"; then
       STEP_ACTION=preserved
       echo "$app is installed and healthy."
       return
@@ -453,7 +465,7 @@ check_agent() {
   local name=$1
   local args=("$1")
   if agent_healthy "$name"; then
-    if [[ "$UPDATE" == false ]]; then
+    if [[ "$UPDATE" == false ]] && ! official_install_pending "$name"; then
       STEP_ACTION=preserved
       "$name" --version
       return
@@ -492,6 +504,7 @@ prepare_sogou_installer() {
 }
 
 execute_mode() {
+  export SETUP_WITH_CLAUDE="$WITH_CLAUDE"
   activate_paths
   case "$MODE" in
     check-updates)
@@ -516,6 +529,7 @@ execute_mode() {
       ;;
     install)
       STEP_TOTAL=$((9 + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/formulae.txt") + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/casks.tsv") + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/vscode-extensions.txt")))
+      if [[ "$WITH_CLAUDE" != true ]]; then STEP_TOTAL=$((STEP_TOTAL - 2)); fi
       if [[ "$WITH_SOGOU" == true ]]; then STEP_TOTAL=$((STEP_TOTAL + 1)); fi
       step_run target check_install_target
       step_run network network_check
@@ -526,10 +540,11 @@ execute_mode() {
       step_run ohmyzsh ensure_ohmyzsh
       step_run kiro-shell ensure_kiro_shell
       install_extensions
-      step_run claude check_agent claude
+      if [[ "$WITH_CLAUDE" == true ]]; then step_run claude check_agent claude; fi
       step_run codex check_agent codex
       step_run verification verify_installation
-      echo 'Open iTerm2 with Clean Setup. Run claude and codex to sign in.'
+      echo 'Open iTerm2 with Clean Setup. Run codex to sign in.'
+      if [[ "$WITH_CLAUDE" == true ]]; then echo 'Run claude to sign in to Claude Code.'; fi
       echo 'Open Kiro.app for the IDE. Run kiro-cli launch for terminal integration onboarding, then reopen iTerm2.'
       echo 'Complete first launch in Docker.app, then run ./setup.sh --docker-smoke.'
       if [[ "$WITH_SOGOU" == true ]]; then step_run sogou-installer prepare_sogou_installer; fi
@@ -539,6 +554,7 @@ execute_mode() {
 
 main() {
   local mode_set=0
+  WITH_CLAUDE=false
   ui_init
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -554,6 +570,10 @@ main() {
         ;;
       --managed-desktop)
         DESKTOP_MODE=managed
+        shift
+        ;;
+      --with-claude)
+        WITH_CLAUDE=true
         shift
         ;;
       --with-sogou)
@@ -577,11 +597,13 @@ main() {
   [[ "$DESKTOP_MODE" == download || "$DESKTOP_MODE" == managed ]] || fail "Invalid desktop mode: $DESKTOP_MODE"
   [[ -d "$CONFIG_DIR" ]] || fail "Missing configuration directory: $CONFIG_DIR"
   if [[ "$MODE" == plan ]]; then
-    echo "Mode: install; update existing tools: $UPDATE; desktop mode: $DESKTOP_MODE"
-    cat "$ROOT/config/formulae.txt" "$ROOT/config/casks.tsv" "$ROOT/config/vscode-extensions.txt" "$ROOT/config/sources.tsv"
+    echo "Mode: install; update existing tools: $UPDATE; desktop mode: $DESKTOP_MODE; include Claude: $WITH_CLAUDE"
+    cat "$ROOT/config/formulae.txt" "$ROOT/config/vscode-extensions.txt"
+    awk -F '\t' -v claude="$WITH_CLAUDE" 'claude == "true" || ($1 !~ /^claude/ && $1 != "anthropic")' "$ROOT/config/casks.tsv" "$ROOT/config/sources.tsv"
     echo "Configuration templates: $CONFIG_DIR"
     echo 'Default: official desktop DMGs in ~/Downloads/macos-setup; install and onboard manually.'
-    echo 'iTerm2/VS Code use official casks; AI CLIs use vendor installers.'
+    echo 'iTerm2/VS Code use official casks; selected AI CLIs use vendor installers.'
+    echo 'Claude Desktop and Claude Code CLI require --with-claude, including verification and updates.'
     echo '--managed-desktop opts into automatic desktop placement and Kiro shell integration.'
     echo '--update refreshes recorded official installations; existing unmanaged copies are preserved.'
     echo "Logs: $LOG_ROOT"

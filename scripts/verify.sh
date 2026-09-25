@@ -15,6 +15,7 @@ done 3<"$ROOT/config/formulae.txt"
 
 while IFS=$'\t' read -r -u 3 package app; do
   [[ -n "$package" ]] || continue
+  if [[ "$package" == claude-desktop && "$WITH_CLAUDE" != true ]]; then continue; fi
   if [[ "${SETUP_ALLOW_PREPARED_DESKTOPS:-}" == 1 ]] && manual_desktop "$package" && ! app_healthy "$app"; then
     python3 "$ROOT/scripts/desktop.py" "$package" --verify-prepared
     echo "Prepared for manual installation: $app (not installed or not yet healthy)."
@@ -25,6 +26,7 @@ while IFS=$'\t' read -r -u 3 package app; do
 done 3<"$ROOT/config/casks.tsv"
 
 for executable in git git-lfs gh go node npm python3 uv rg fd bat fzf autojump zoxide jq yq tmux tree delta tig wget htop shellcheck shfmt ffmpeg magick glow pop gum crush claude codex; do
+  if [[ "$executable" == claude && "$WITH_CLAUDE" != true ]]; then continue; fi
   command -v "$executable"
 done
 git --version
@@ -35,7 +37,7 @@ node --version
 npm --version
 python3 --version
 uv --version
-claude --version
+if [[ "$WITH_CLAUDE" == true ]]; then claude --version; fi
 codex --version
 if agent_healthy kiro-cli; then
   kiro-cli --version
@@ -59,7 +61,8 @@ python3 "$ROOT/scripts/configure.py" --verify
 verify_editor
 zsh -n "$HOME/.config/macos-setup/env.zsh"
 zsh -n "$HOME/.config/macos-setup/shell.zsh"
-zsh -lic 'command -v claude && command -v codex && command -v go && command -v code'
+if [[ "$WITH_CLAUDE" == true ]]; then zsh -lic 'command -v claude'; fi
+zsh -lic 'command -v codex && command -v go && command -v code'
 python3 "$ROOT/scripts/runtime-smoke.py"
 python3 "$ROOT/scripts/inventory.py"
 echo 'Selected installation/preparation scope verified. Manual desktop installs and first launch remain separate.'

@@ -76,6 +76,10 @@
       "items": {
         "type": "string"
       }
+    },
+    "with_claude": {
+      "type": "boolean",
+      "description": "Whether Claude Desktop and Claude Code CLI are selected for this run."
     }
   }
 }

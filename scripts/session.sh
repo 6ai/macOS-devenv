@@ -92,6 +92,14 @@ event() {
   printf '%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" >>"$RUN_DIR/events.tsv"
 }
 
+step_display() {
+  # Manifest IDs remain stable in machine reports; app does not imply cask.
+  case "$1" in
+    cask:*) printf 'app:%s' "${1#cask:}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 step_run() {
   local percent=0 filled=0 bar='' i kind=ok label=OK
   CURRENT_STEP=$1
@@ -104,7 +112,7 @@ step_run() {
     if [[ "$i" -lt "$filled" ]]; then bar+='#'; else bar+='.'; fi
   done
   printf '\n'
-  ui_print progress "[$STEP_INDEX/$STEP_TOTAL] [$bar] $percent% $CURRENT_STEP"
+  ui_print progress "[$STEP_INDEX/$STEP_TOTAL] [$bar] $percent% $(step_display "$CURRENT_STEP")"
   event "$CURRENT_STEP" started pending
   "$@"
   COMPLETED_STEPS=$((COMPLETED_STEPS + 1))
@@ -124,7 +132,7 @@ step_run() {
       label=WARN
       ;;
   esac
-  ui_print "$kind" "[$label] $CURRENT_STEP ($STEP_ACTION)"
+  ui_print "$kind" "[$label] $(step_display "$CURRENT_STEP") ($STEP_ACTION)"
   CURRENT_STEP=finished
 }
 
@@ -146,6 +154,7 @@ finish_session() {
     json_string "$(cat "$ROOT/VERSION")"
     printf ',"desktop_mode":'
     json_string "${DESKTOP_MODE:-download}"
+    printf ',"with_claude":%s' "${WITH_CLAUDE:-false}"
     printf ',"manual_steps":['
     for component in ${MANUAL_STEPS:-}; do
       printf '%s' "$separator"
@@ -162,7 +171,7 @@ finish_session() {
   mv "$RUN_DIR/result.json.tmp" "$RUN_DIR/result.json"
   if [[ "$code" -ne 0 ]]; then
     printf '\n'
-    ui_print error "[FAILED] $CURRENT_STEP, exit $code. Correct the cause and rerun the same command."
+    ui_print error "[FAILED] $(step_display "$CURRENT_STEP"), exit $code. Correct the cause and rerun the same command."
   fi
   printf '\n'
   if [[ "$code" == 0 ]]; then
@@ -225,6 +234,7 @@ network_check() {
   printf 'component\thttp_status\ttransport_exit\n' >"$RUN_DIR/network.tsv"
   while IFS=$'\t' read -r -u 3 component kind url; do
     [[ "$kind" == connectivity ]] || continue
+    if [[ "$component" == anthropic && "${WITH_CLAUDE:-false}" != true ]]; then continue; fi
     transport=0
     code=$(curl --config "$ROOT/config/download.curlrc" --silent --output /dev/null --location --connect-timeout 8 --max-time 20 --write-out '%{http_code}' "$url") || transport=$?
     printf '%s\t%s\t%s\n' "$component" "$code" "$transport" >>"$RUN_DIR/network.tsv"
@@ -246,42 +256,45 @@ network_check() {
   fi
 }
 
-run_session() {
-  local session_root=$1 lock_dir code owner stale_dir recovery_dir
+# A persistent inode with a kernel lock has no mkdir/PID publication or stale-
+# recovery window. Descriptor 9 is inherited by shell installers and explicitly
+# passed to native installers launched from Python. Never unlink session.lock.
+run_session() (
+  local session_root=$1 code owner
   local statuses=()
   ui_init
   umask 077
   mkdir -p "$session_root"
   session_root=$(cd "$session_root" && pwd -P)
-  lock_dir="$session_root/install.lock"
-  if ! mkdir "$lock_dir" 2>/dev/null; then
-    owner=$(cat "$lock_dir/owner.pid" 2>/dev/null || true)
-    if [[ "$owner" =~ ^[1-9][0-9]*$ ]] && ! kill -0 "$owner" 2>/dev/null; then
-      recovery_dir="$session_root/recovery.lock"
-      mkdir "$recovery_dir" 2>/dev/null || return 75
-      # Recheck under the recovery guard so another process's new lock is never stolen.
-      owner=$(cat "$lock_dir/owner.pid" 2>/dev/null || true)
-      if [[ ! "$owner" =~ ^[1-9][0-9]*$ ]] || kill -0 "$owner" 2>/dev/null; then
-        rmdir "$recovery_dir"
-        return 75
-      fi
-      stale_dir="$session_root/stale-lock-$$"
-      mv "$lock_dir" "$stale_dir"
-      rm -f "$stale_dir/owner.pid"
-      rmdir "$stale_dir"
-      if ! mkdir "$lock_dir" 2>/dev/null; then
-        rmdir "$recovery_dir"
-        return 75
-      fi
-      rmdir "$recovery_dir"
-    else
-      echo "Another installation or incomplete lock exists: $lock_dir" >&2
-      echo 'Inspect owner.pid. Do not remove a lock belonging to a running installer.' >&2
+  [[ ! -L "$session_root/session.lock" ]] || return 75
+  exec 9>>"$session_root/session.lock"
+  if [[ $(uname -s) == Darwin ]]; then
+    /usr/bin/lockf -s -t 0 9 || {
+      echo 'Another installation is still running.' >&2
       return 75
-    fi
+    }
+  else
+    # Portable test hosts; macOS bootstrap uses its system lockf, not Homebrew.
+    flock -n -E 75 9 || {
+      echo 'Another installation is still running.' >&2
+      return 75
+    }
   fi
-  printf '%s\n' "$$" >"$lock_dir/owner.pid"
-  trap 'owner=$(cat "$lock_dir/owner.pid" 2>/dev/null || true); if [[ "$owner" == "$$" ]] || ! kill -0 "$owner" 2>/dev/null; then rm -f "$lock_dir/owner.pid"; rmdir "$lock_dir" 2>/dev/null || true; fi' EXIT
+  export MACOS_SETUP_LOCKED=1
+  # Compatibility with interrupted pre-0.1.41 sessions. Stop old versions before
+  # upgrading: their descendants do not inherit the new kernel lock.
+  if [[ -d "$session_root/install.lock" ]]; then
+    owner=$(cat "$session_root/install.lock/owner.pid" 2>/dev/null || true)
+    if [[ -n "$owner" ]]; then
+      if [[ ! "$owner" =~ ^[1-9][0-9]*$ ]] || kill -0 "$owner" 2>/dev/null; then
+        echo 'An older installer may still be running; inspect install.lock/owner.pid.' >&2
+        return 75
+      fi
+    fi
+    rm -f "$session_root/install.lock/owner.pid"
+    rmdir "$session_root/install.lock"
+  fi
+  if [[ -d "$session_root/recovery.lock" ]]; then rmdir "$session_root/recovery.lock"; fi
   RUN_DIR=$(mktemp -d "$session_root/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
   export RUN_DIR
   STARTED_AT=$(date -u +%FT%TZ)
@@ -294,8 +307,6 @@ run_session() {
     trap 'finish_session $?' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    # Record the actual worker, so killing only the logging supervisor cannot unlock a live installer.
-    /bin/bash -c 'printf "%s\n" "$PPID"' >"$lock_dir/owner.pid"
     record_environment
     ui_print info "[INFO] macOS Setup $(cat "$ROOT/VERSION") | mode=$MODE | update=$UPDATE | desktop=${DESKTOP_MODE:-download}"
     execute_mode
@@ -310,8 +321,5 @@ run_session() {
     )
   fi
   set -e
-  rm -f "$lock_dir/owner.pid"
-  rmdir "$lock_dir"
-  trap - EXIT
   return "$code"
-} 4>&1
+) 4>&1

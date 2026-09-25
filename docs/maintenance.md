@@ -1,5 +1,7 @@
 # 维护流程：先检查，再更新，再验收
 
+Claude Desktop 和 Claude Code CLI 默认不在维护范围内。需要检查或更新它们时，分别使用 `./setup.sh --with-claude --check-updates` 和 `./setup.sh --with-claude --update`；已有安装不会隐式启用。
+
 安装成功是基线，不代表以后一直最新。维护分别处理软件版本、实际可用性、脚本和配置变更；每次保存当次报告，避免拿旧成功日志判断当前机器。
 
 ## 日常入口

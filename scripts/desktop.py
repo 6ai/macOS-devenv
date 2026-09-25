@@ -60,7 +60,7 @@ def prepare(name, update=False):
     if data is None:
         catalog = vendor.sources()
         metadata = (dict(url=catalog[name + '-download'], version='latest')
-                    if name in ('docker-desktop', 'google-chrome') else vendor.release(name, catalog))
+                    if name in ('docker-desktop', 'google-chrome', 'claude-desktop') else vendor.release(name, catalog))
         version = metadata['version']
         if version != 'latest':
             vendor.version_key(version)
@@ -72,9 +72,18 @@ def prepare(name, update=False):
         # Staging stays in a private user download directory; nothing is copied to Applications.
         with tempfile.TemporaryDirectory(prefix='.desktop-', dir=root) as temporary:
             image = Path(temporary) / filename
-            vendor.download(name, metadata['url'], image, metadata.get('sha256'))
+            try:
+                vendor.download(name, metadata['url'], image, metadata.get('sha256'))
+            except subprocess.CalledProcessError:
+                if name != 'claude-desktop':
+                    raise
+                # The vendor's browser download endpoint can reject curl. Both
+                # routes are official; never switch to an untrusted mirror.
+                print('Official Claude DMG redirect unavailable; trying its official release feed.', file=sys.stderr)
+                metadata = vendor.release(name, catalog)
+                vendor.download(name, metadata['url'], image, metadata.get('sha256'))
             subprocess.run(['hdiutil', 'verify', str(image)], check=True, stdout=sys.stderr)
-            data = dict(schema_version=1, component=name, filename=filename, version=version,
+            data = dict(schema_version=1, component=name, filename=filename, version=metadata['version'],
                         source=metadata['url'], sha256=digest(image), manual_install_required=True)
             pending = Path(temporary) / 'receipt.json'
             pending.write_text(json.dumps(data, indent=2) + '\n')

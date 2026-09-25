@@ -134,7 +134,8 @@ def gallery_versions(data):
 
 
 class Checker:
-    def __init__(self, root=ROOT, home=None, config_dir=None):
+    def __init__(self, root=ROOT, home=None, config_dir=None, with_claude=False):
+        self.with_claude = with_claude
         self.root, self.home = root, home or Path.home()
         self.config_dir = config_dir or root / 'config'
         self.items, self.issues = [], []
@@ -168,7 +169,8 @@ class Checker:
 
     def packages(self):
         formulae = (self.root / 'config/formulae.txt').read_text().split()
-        casks = [line.split('\t') for line in (self.root / 'config/casks.tsv').read_text().splitlines()]
+        casks = [line.split('\t') for line in (self.root / 'config/casks.tsv').read_text().splitlines()
+                 if self.with_claude or not line.startswith('claude-desktop\t')]
         local = self.attempt('homebrew:inventory', lambda: json.loads(command('brew', 'info', '--json=v2', '--installed')))
         by_name, managed_casks = {}, {}
         if local is not None:
@@ -241,7 +243,7 @@ class Checker:
                 state, note = 'manual', 'Upstream formula is disabled/deprecated; review replacement before updating.'
             self.add('formula:' + name, installed, latest, 'homebrew', state, note)
         with ThreadPoolExecutor(max_workers=5) as executor:
-            names = ('chatgpt', 'kiro', 'kiro-cli', 'claude-desktop', 'claude', 'codex')
+            names = ('chatgpt', 'kiro', 'kiro-cli', 'codex') + (('claude-desktop', 'claude') if self.with_claude else ())
             official = dict(zip(names, executor.map(
                 lambda name: self.attempt('official:' + name, official_ai.release, name, self.sources), names)))
         for name, app in casks:
@@ -279,7 +281,7 @@ class Checker:
             self.add('cask:' + name, installed, latest, manager, state,
                      'Official stable/latest metadata; default prepares desktop DMGs. --managed-desktop --update updates recorded apps; other copies use their own updater.' if external else
                      'Actual app version, including self-updates; user/unmanaged copies use their own updater.')
-        for name in ('claude', 'codex'):
+        for name in (('claude', 'codex') if self.with_claude else ('codex',)):
             executable = shutil.which(name)
             value = self.attempt('cli:' + name, command, name, '--version') if executable else None
             match = re.search(r'\d+(?:\.\d+)+(?:[-+][\w.]+)?', value or '')
@@ -327,6 +329,8 @@ class Checker:
 
     def configurations(self):
         for name, (variable, relative, preserve) in TEMPLATES.items():
+            if name == 'claude-settings.json' and not self.with_claude:
+                continue
             target = self.home / relative
             if variable and os.environ.get(variable):
                 target = Path(os.environ[variable]) / target.name
@@ -359,6 +363,8 @@ class Checker:
                     + ['cask:' + line.split('\t')[0] for line in (self.root / 'config/casks.tsv').read_text().splitlines()]
                     + ['vscode:' + name for name in (self.root / 'config/vscode-extensions.txt').read_text().split()]
                     + ['config:' + name for name in TEMPLATES] + ['cli:claude', 'cli:codex'])
+        if not self.with_claude:
+            expected = [name for name in expected if name not in ('cask:claude-desktop', 'cli:claude', 'config:claude-settings.json')]
         present = {item['component'] for item in self.items}
         for component in expected:
             if component not in present:
@@ -390,9 +396,10 @@ def save(report, directory):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config-dir', type=Path, default=ROOT / 'config')
+    parser.add_argument('--with-claude', action='store_true', default=os.environ.get('SETUP_WITH_CLAUDE') == 'true')
     args = parser.parse_args()
     directory = Path(os.environ['RUN_DIR'])
-    report = Checker(config_dir=args.config_dir).run()
+    report = Checker(config_dir=args.config_dir, with_claude=args.with_claude).run()
     save(report, directory)
     print('Maintenance status:', json.dumps(report['summary']))
     print('Reports:', directory / 'updates.md', 'and updates.json')

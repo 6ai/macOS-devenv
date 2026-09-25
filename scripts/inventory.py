@@ -15,6 +15,7 @@ def output(*args):
 
 
 def inventory():
+    with_claude = os.environ.get('SETUP_WITH_CLAUDE') == 'true'
     packages = (ROOT / 'config/formulae.txt').read_text().split()
     references = [output('/bin/bash', '-c', 'source "$1"; installed_formula_ref "$2"',
                          'inventory', str(ROOT / 'setup.sh'), name) if '/' in name else 'homebrew/core/' + name
@@ -26,6 +27,8 @@ def inventory():
     allow_prepared = os.environ.get('SETUP_ALLOW_PREPARED_DESKTOPS') == '1'
     for line in (ROOT / 'config/casks.tsv').read_text().splitlines():
         token, app = line.split('\t')
+        if token == 'claude-desktop' and not with_claude:
+            continue
         path = output('/bin/bash', '-c', 'source "$1"; app_path "$2"',
                       'inventory', str(ROOT / 'setup.sh'), app)
         if allow_prepared and token in MANUAL_APPS:
@@ -40,6 +43,8 @@ def inventory():
                              f'{path}/Contents/Info.plist')
     tools = {}
     for name in ('claude', 'codex', 'kiro-cli', 'docker'):
+        if name == 'claude' and not with_claude:
+            continue
         try:
             tools[name] = output(name, '--version').splitlines()[0]
         except (OSError, subprocess.CalledProcessError):
@@ -64,7 +69,7 @@ def inventory():
         revision = 'archive'
     return {'schema_version': 1, 'script_version': (ROOT / 'VERSION').read_text().strip(),
             'revision': revision, 'formulae': formulae, 'applications': apps, 'tools': tools,
-            'pending_applications': pending,
+            'pending_applications': pending, 'with_claude': with_claude,
             'vscode_extensions': extensions, 'ohmyzsh_revision': omz_revision,
             'kiro_permission_template': kiro_policy_status(Path.home())}
 

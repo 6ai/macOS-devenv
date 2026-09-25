@@ -74,7 +74,8 @@ def inline_preference(cli, home, verify):
     if 'inline.enabled' not in data:
         if verify:
             raise ValueError('Kiro inline history-sharing preference is unset; rerun setup')
-        subprocess.run([str(cli), 'inline', 'disable'], stdout=subprocess.DEVNULL, check=True, timeout=15)
+        subprocess.run([str(cli), 'inline', 'disable'], stdout=subprocess.DEVNULL, check=True, timeout=15,
+                       pass_fds=(9,) if os.environ.get('MACOS_SETUP_LOCKED') == '1' else ())
         if not path.is_file():
             raise ValueError('Kiro did not create settings in the requested configuration directory; '
                              'check the selected CLI version and KIRO_HOME before rerunning setup')
@@ -142,7 +143,7 @@ def configure(home, app, verify=False):
     if not installed:
         # Native installer backs up changed dotfiles and keeps pre/post blocks at the edges.
         subprocess.run([str(cli), 'integrations', 'install', '--silent', 'dotfiles', 'zsh'],
-                       check=True, timeout=60)
+                       pass_fds=(9,) if os.environ.get('MACOS_SETUP_LOCKED') == '1' else (), check=True, timeout=60)
         if not integration_status(cli) or not helpers_healthy(helpers):
             raise ValueError('Kiro Zsh loader contract changed or installation is incomplete; update setup')
     action = 'checked' if verify else ('installed-or-updated' if links or not installed or preference_changed else 'skipped')

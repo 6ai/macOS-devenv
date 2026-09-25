@@ -78,13 +78,28 @@ class MaintenanceTests(unittest.TestCase):
         name = url.rsplit('/', 1)[1].removesuffix('.json')
         return {'name': name, 'versions': {'stable': '1.0.0'}, 'revision': 0, 'version': '1.0.0'}
 
-    def check(self, fetch=None, text_fetch=None, command=None):
+    def check(self, fetch=None, text_fetch=None, command=None, with_claude=True):
         with patch.dict(os.environ, {}, clear=True), patch.object(maintenance, 'command', command or self.command), \
                 patch.object(maintenance, 'shell', self.shell), patch.object(maintenance, 'public_json', fetch or self.fetch), \
                 patch.object(maintenance, 'public_text', side_effect=text_fetch or (lambda url: '  version \"1.0.0\"\n' if url.endswith('.rb') else '../Formula/p/python@3.14.rb')), \
-                patch.object(maintenance.official_ai, 'release', return_value={'version': '1.0.0'}), \
+                patch.object(maintenance.official_ai, 'release', return_value={'version': '1.0.0'}) as releases, \
                 patch.object(maintenance.shutil, 'which', side_effect=lambda name: str(self.home / '.local/bin' / name)):
-            return maintenance.Checker(self.root, self.home).run()
+            report = maintenance.Checker(self.root, self.home, with_claude=with_claude).run()
+            if not with_claude:
+                self.assertFalse(any(call.args[0].startswith('claude') for call in releases.call_args_list))
+            return report
+
+    def test_unselected_claude_is_not_queried_or_reported(self):
+        original = self.shell
+        def selected_shell(function, *args):
+            self.assertNotIn('Claude.app', args)
+            return original(function, *args)
+        self.shell = selected_shell
+        (self.home / '.claude/settings.json').unlink()
+        report = self.check(with_claude=False)
+        self.assertTrue(report['complete'], report['issues'])
+        self.assertFalse(any('claude' in item['component'] for item in report['items']))
+        self.assertFalse(any('claude' in args for args in self.commands))
 
     def test_complete_declared_surface_schema_and_nonmutating_commands(self):
         before = {p:p.read_bytes() for p in self.home.rglob('*') if p.is_file()}

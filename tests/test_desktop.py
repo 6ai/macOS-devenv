@@ -77,6 +77,41 @@ class DesktopTests(unittest.TestCase):
         self.assertIsNone(desktop.prepared('google-chrome'))
         self.assertFalse(list(desktop.directory().glob('*.dmg')))
 
+    def test_claude_default_uses_official_latest_dmg_without_metadata_lookup(self):
+        with patch.object(desktop.vendor, 'release', side_effect=AssertionError('metadata must not be required')), \
+                patch.object(desktop.vendor, 'download', side_effect=self.download) as download, \
+                patch.object(desktop.subprocess, 'run'), contextlib.redirect_stderr(io.StringIO()):
+            desktop.prepare('claude-desktop')
+            desktop.prepare('claude-desktop')
+            self.assertEqual(download.call_count, 1)
+            self.assertEqual(download.call_args.args[1], desktop.vendor.sources()['claude-desktop-download'])
+            desktop.prepare('claude-desktop', update=True)
+            self.assertEqual(download.call_count, 2)
+        data = desktop.prepared('claude-desktop')
+        self.assertEqual(data['version'], 'latest')
+        self.assertEqual(data['filename'], 'claude-desktop-latest.dmg')
+        self.assertTrue(data['manual_install_required'])
+        self.assertFalse((self.home / 'Applications').exists())
+
+    def test_claude_redirect_failure_falls_back_only_to_official_release_dmg(self):
+        catalog = desktop.vendor.sources()
+        url = catalog['claude-desktop-distribution'] + '2.9.0/Claude-' + 'a' * 40 + '.dmg'
+        calls = []
+        def download(name, source, target, digest=None):
+            calls.append(source)
+            if source == catalog['claude-desktop-download']:
+                target.write_bytes(b'failed redirect')
+                raise subprocess.CalledProcessError(22, 'curl')
+            self.download(name, source, target, digest)
+        with patch.object(desktop.vendor, 'release', return_value=dict(version='2.9.0', url=url)), \
+                patch.object(desktop.vendor, 'download', side_effect=download), \
+                patch.object(desktop.subprocess, 'run'), contextlib.redirect_stderr(io.StringIO()):
+            desktop.prepare('claude-desktop')
+        self.assertEqual(calls, [catalog['claude-desktop-download'], url])
+        data = desktop.prepared('claude-desktop')
+        self.assertEqual((data['source'], data['version']), (url, '2.9.0'))
+        self.assertEqual((desktop.directory() / data['filename']).read_bytes(), b'complete vendor DMG')
+
     def test_claude_desktop_dmg_tracks_official_release_feed(self):
         catalog = desktop.vendor.sources()
         data = dict(currentRelease='2.9.0', releases=[dict(version='2.9.0', updateTo=dict(

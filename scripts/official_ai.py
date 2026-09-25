@@ -138,28 +138,64 @@ def receipt_path(name, home=None):
     return root / 'macos-setup/official-installs' / (name + '.json')
 
 
-def managed(name, destination, home=None):
-    path = receipt_path(name, home)
+def pending_path(name, home=None):
+    return receipt_path(name, home).with_suffix('.pending.json')
+
+
+def read_record(path, name, destination):
     no_symlinks(path)
     if not path.exists():
-        return False
+        return None
     data = json.loads(path.read_text())
-    return data.get('schema_version') == 1 and data.get('component') == name and data.get('path') == str(destination)
+    if (data.get('schema_version') != 1 or data.get('component') != name
+            or data.get('path') != str(destination)):
+        raise ValueError('Installation record does not match destination: ' + name)
+    return data
 
 
-def record(name, destination, version):
-    path = receipt_path(name)
+def managed(name, destination, home=None):
+    # A pending transaction establishes ownership, never installation health.
+    path = receipt_path(name, home)
+    no_symlinks(path)
+    data = json.loads(path.read_text()) if path.exists() else {}
+    return bool((data.get('schema_version') == 1 and data.get('component') == name
+                 and data.get('path') == str(destination))
+                or read_record(pending_path(name, home), name, destination))
+
+
+def write_record(path, name, destination, version, **extra):
     no_symlinks(path)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, temporary = tempfile.mkstemp(prefix='.' + name, dir=path.parent)
     try:
         with os.fdopen(fd, 'w') as stream:
-            json.dump(dict(schema_version=1, component=name, path=str(destination), version=version), stream)
+            json.dump(dict(schema_version=1, component=name, path=str(destination), version=version, **extra), stream)
             stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def record(name, destination, version):
+    write_record(receipt_path(name), name, destination, version)
+
+
+def begin_install(name, destination, version, **extra):
+    write_record(pending_path(name), name, destination, version, **extra)
+
+
+def inherited_lock():
+    # subprocess defaults close inherited descriptors. Keep the session lock
+    # alive if only the shell/Python supervisor is killed during native work.
+    return (9,) if os.environ.get('MACOS_SETUP_LOCKED') == '1' else ()
+
+
+def finish_install(name, destination, version):
+    record(name, destination, version)
+    pending_path(name).unlink(missing_ok=True)
 
 
 def download(name, url, destination, digest=None):
@@ -231,10 +267,11 @@ def place_bundle(name, staged, destination):
     # Only the final copy is staged beside its target, for same-volume rename.
     directory = Path(tempfile.mkdtemp(prefix='.macos-setup-', dir=destination.parent))
     backup = directory / 'previous.app'
+    begin_install(name, destination, bundle_info(staged)['CFBundleShortVersionString'], staging=str(directory))
     completed = False
     try:
         pending = directory / destination.name
-        subprocess.run(['ditto', str(staged), str(pending)], check=True)
+        subprocess.run(['ditto', str(staged), str(pending)], check=True, pass_fds=inherited_lock())
         verify_bundle(name, pending)
         existed = destination.exists()
         if existed:
@@ -242,7 +279,8 @@ def place_bundle(name, staged, destination):
             destination.rename(backup)
         try:
             pending.rename(destination)
-            verify_bundle(name, destination)
+            info = verify_bundle(name, destination)
+            record(name, destination, info['CFBundleShortVersionString'])
             completed = True
         except BaseException:
             if destination.exists():
@@ -253,11 +291,67 @@ def place_bundle(name, staged, destination):
     finally:
         if completed or not backup.exists():
             shutil.rmtree(directory)
+            pending_path(name).unlink(missing_ok=True)
         else:
             print('Previous application preserved for recovery: ' + str(backup), file=sys.stderr)
 
 
+def recover_app(name, destination):
+    data = read_record(pending_path(name), name, destination)
+    if not data:
+        return False
+    staging = data.get('staging')
+    if not isinstance(staging, str):
+        raise ValueError('Missing application transaction staging path')
+    directory = Path(staging)
+    no_symlinks(directory)
+    no_symlinks(destination)
+    if directory.parent != destination.parent or not directory.name.startswith('.macos-setup-'):
+        raise ValueError('Invalid application transaction staging path')
+    backup = directory / 'previous.app'
+    no_symlinks(backup)
+    healthy = False
+    if destination.exists():
+        try:
+            info = verify_bundle(name, destination)
+            healthy = True
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    if not healthy and backup.exists():
+        # A crash between the two renames must never discard the previous app.
+        if destination.exists():
+            require_closed(destination)
+            shutil.rmtree(destination)
+        backup.rename(destination)
+        try:
+            info = verify_bundle(name, destination)
+            healthy = True
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    if healthy:
+        record(name, destination, info['CFBundleShortVersionString'])
+    if directory.exists():
+        shutil.rmtree(directory)
+    if healthy:
+        pending_path(name).unlink()
+    # Otherwise keep pending ownership so an incomplete first install is repaired.
+    return healthy
+
+
 def install_app(name, destination, healthy=False, update=False):
+    pending = pending_path(name)
+    no_symlinks(pending)
+    if pending.exists():
+        interrupted = Path(json.loads(pending.read_text()).get('path', ''))
+        if interrupted != destination:
+            allowed = {parent / app for parent in (APPLICATIONS, Path.home().resolve() / 'Applications')
+                       for app in APPS[name][2]}
+            if interrupted not in allowed or destination.exists():
+                raise ValueError('Interrupted installation conflicts with the selected application')
+            destination = interrupted
+            healthy = False
+    recovered = recover_app(name, destination)
+    healthy = healthy or recovered
     owned = managed(name, destination)
     if healthy and (not update or not owned):
         return 'skipped' if owned else 'preserved'
@@ -300,7 +394,7 @@ def install_app(name, destination, healthy=False, update=False):
             if destination.exists() and not owned:
                 raise ValueError('An application appeared while downloading; rerun to check its state')
             place_bundle(name, apps[0], destination)
-    record(name, destination, info['CFBundleShortVersionString'])
+    finish_install(name, destination, info['CFBundleShortVersionString'])
     print(name + ': official version ' + info['CFBundleShortVersionString'], file=sys.stderr)
     return 'installed-or-updated' if healthy else ('repaired' if owned else 'installed')
 
@@ -309,6 +403,12 @@ def install_cli(name, healthy=False, update=False):
     destination = Path.home().resolve() / '.local/bin' / name
     owned = managed(name, destination)
     selected = shutil.which(name)
+    if healthy and owned and selected == str(destination) and pending_path(name).exists():
+        output = subprocess.check_output([str(destination), '--version'], text=True, timeout=30)
+        match = re.search(r'\d+(?:\.\d+)+', output)
+        if not match:
+            raise ValueError('Cannot verify interrupted CLI installation')
+        finish_install(name, destination, match[0])
     if healthy and (not update or not owned or selected != str(destination)):
         return 'skipped' if owned and selected == str(destination) else 'preserved'
     no_symlinks(destination.parent)
@@ -326,12 +426,13 @@ def install_cli(name, healthy=False, update=False):
         env = {**os.environ, 'CODEX_NON_INTERACTIVE': '1'}
         args = (['/bin/sh', str(installer), '--release', data['version']] if name == 'codex'
                 else ['/bin/bash', str(installer), data['version']])
-        subprocess.run(args, env=env, check=True, umask=0o022, cwd=directory)
+        begin_install(name, destination, data['version'])
+        subprocess.run(args, env=env, check=True, umask=0o022, cwd=directory, pass_fds=inherited_lock())
     output = subprocess.check_output([str(destination), '--version'], text=True, timeout=30)
     match = re.search(r'\d+(?:\.\d+)+', output)
     if not match or version_key(match[0]) < version_key(data['version']):
         raise ValueError('Official CLI installer did not provide the requested version')
-    record(name, destination, match[0])
+    finish_install(name, destination, match[0])
     print(output.strip(), file=sys.stderr)
     return 'installed-or-updated' if healthy else ('repaired' if owned else 'installed')
 

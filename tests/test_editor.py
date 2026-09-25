@@ -479,6 +479,35 @@ echo "ACTION $STEP_ACTION"
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), 'skipped')
 
+    def test_custom_omz_and_shell_repeat_preserve_bytes_mtimes_and_single_load(self):
+        self.env['ZSH'] = str(self.home / 'custom omz')
+        folder = self.fake_omz()
+        custom = folder / 'custom/themes/private.zsh-theme'
+        custom.parent.mkdir(parents=True)
+        custom.write_text('# personal theme\n')
+        rc = self.home / '.zshrc'
+        rc.write_text('export ZSH="' + str(folder) + '"\nZSH_THEME=private\nplugins=(git python)\nsource "$ZSH/oh-my-zsh.sh"\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            configure.configure(self.home, ROOT / 'config')
+        def snapshot():
+            return {str(p.relative_to(self.home)): (p.read_bytes(), p.stat().st_mtime_ns)
+                    for p in self.home.rglob('*') if p.is_file()}
+        before = snapshot()
+        for _ in range(2):
+            result = self.shell('download_installer() { echo WRONG; return 99; }; '
+                                'git() { echo WRONG; return 98; }; ensure_ohmyzsh; echo "$STEP_ACTION"')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'skipped')
+            with contextlib.redirect_stdout(io.StringIO()):
+                configure.configure(self.home, ROOT / 'config')
+                configure.verify(self.home)
+            self.assertEqual(snapshot(), before)
+        result = self.zsh('LOADS=0; source "$HOME/.zshrc"; source "$1"; print -r -- "$ZSH_THEME:${plugins[*]}:$LOADS"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), 'private:git python:1')
+        self.assertFalse((self.home / '.oh-my-zsh').exists())
+        self.assertEqual(rc.read_text().splitlines().count(configure.SOURCE_LINE), 1)
+
     def test_omz_update_requires_clean_official_checkout(self):
         self.fake_omz()
         for remote, dirty, accepted in [('https://github.com/ohmyzsh/ohmyzsh.git', '', True),
@@ -598,7 +627,7 @@ check_agent codex
         shell_home = self.home / 'zsh'
         shell_home.mkdir()
         (shell_home / '.zprofile').write_text('# user\n' + configure.SOURCE_LINE + '\n' + configure.ENV_SOURCE_LINE + '\n')
-        options = {'codex_home': self.home / 'codex', 'claude_home': self.home / 'claude', 'shell_home': shell_home}
+        options = {'with_claude': True, 'codex_home': self.home / 'codex', 'claude_home': self.home / 'claude', 'shell_home': shell_home}
         with contextlib.redirect_stdout(io.StringIO()):
             configure.configure(self.home, ROOT / 'config', **options)
             configure.configure(self.home, ROOT / 'config', **options)

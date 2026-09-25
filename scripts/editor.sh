@@ -11,7 +11,7 @@ omz_healthy() {
 }
 
 ensure_ohmyzsh() {
-  local directory installer remote
+  local directory installer remote staging
   directory=$(omz_path)
   if omz_healthy "$directory"; then
     STEP_ACTION=skipped
@@ -27,7 +27,15 @@ ensure_ohmyzsh() {
   else
     installer=$(mktemp)
     download_installer ohmyzsh "$installer"
-    ZSH="$directory" KEEP_ZSHRC=yes CHSH=no RUNZSH=no /bin/sh "$installer" --unattended
+    mkdir -p "$(dirname "$directory")"
+    staging=$(mktemp -d "$(dirname "$directory")/.macos-setup-omz-XXXXXX")
+    # Keep a killed clone out of the final location; custom existing trees never
+    # enter this path. Same-volume rename publishes only the complete checkout.
+    ZSH="$staging/oh-my-zsh" KEEP_ZSHRC=yes CHSH=no RUNZSH=no /bin/sh "$installer" --unattended
+    omz_healthy "$staging/oh-my-zsh" || fail 'Oh My Zsh staging checkout is incomplete.'
+    [[ ! -e "$directory" && ! -L "$directory" ]] || fail 'Oh My Zsh appeared during installation; rerun to inspect it.'
+    mv "$staging/oh-my-zsh" "$directory"
+    rmdir "$staging"
     rm -f "$installer"
     STEP_ACTION=installed
   fi

@@ -8,6 +8,7 @@ Read `README.md` and `docs/automation.md` first. This directory is an independen
 - Bash 3.2 bootstrap must work before Homebrew or Python is installed.
 - Default execution skips healthy tools. Only `--update` upgrades them. Broken managed installations are repaired; unmanaged applications and personal AI configuration are preserved.
 - Default desktop policy prepares official DMGs for manual installation; iTerm2/VS Code remain casks. AI CLIs use official scripts; default Kiro keeps vendor onboarding/integration. --managed-desktop explicitly enables automatic app placement and Kiro shell management. Never label prepared downloads as installed apps. Preserve healthy unmanaged copies and personal configuration; test both policies on disposable machines.
+- Claude Desktop and Claude Code CLI are disabled by default. Only --with-claude selects their installation, configuration, verification and maintenance; --managed-desktop does not imply selection. Preserve unselected software/configuration.
 - Resume by checking actual state. Never trust a completion marker as proof of installation.
 - Keep package-list input separate from subprocess stdin. Do not put mutating shell functions in `if`, `!`, `&&` or `||` contexts that disable Bash `errexit`.
 - Record only whitelisted environment metadata. Never dump `env`, credentials, user configuration contents, serial numbers, hostnames, proxy URLs or public IPs.

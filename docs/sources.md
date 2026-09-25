@@ -10,7 +10,7 @@ AI 官方安装入口补充核对：2026-09-25；其他桌面应用、Oh My Zsh�
 | --- | --- | --- |
 | Apple Command Line Tools | 本机 `xcode-select --install` 系统安装器 | [Apple Xcode 资源](https://developer.apple.com/xcode/resources/)，系统软件更新 |
 | Homebrew | `Homebrew/install` 的 `HEAD/install.sh` | [brew.sh](https://brew.sh/)、[官方安装仓库](https://github.com/Homebrew/install)、[平台支持](https://docs.brew.sh/Support-Tiers) |
-| Claude Code（自动官方安装） | `curl -fsSL https://claude.ai/install.sh \| bash` | [安装 / 版本管理](https://code.claude.com/docs/en/setup)、[settings 规范](https://code.claude.com/docs/en/settings) |
+| Claude Code（`--with-claude` 可选安装） | `curl -fsSL https://claude.ai/install.sh \| bash` | [安装 / 版本管理](https://code.claude.com/docs/en/setup)、[settings 规范](https://code.claude.com/docs/en/settings) |
 | Codex CLI（自动官方安装） | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | [官方 CLI 安装](https://learn.chatgpt.com/docs/codex/cli)、[配置规范](https://learn.chatgpt.com/docs/config-file/config-basic) |
 | ChatGPT / Codex 桌面端（默认下载 DMG） | 官方下载页，OpenAI `persistent.oaistatic.com/codex-app-prod/` 原包 | [当前官方桌面说明](https://learn.chatgpt.com/docs/app)、[当前 Cask](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/c/chatgpt.rb)、[旧 Codex Cask](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/c/codex-app.rb) |
 | Kiro CLI / Zsh | 默认使用官方安装脚本和 onboarding；托管模式才解析 manifest 并配置 Zsh | [Cask](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/k/kiro-cli.rb)、[CLI 命令](https://kiro.dev/docs/reference/cli-commands/)、[补全](https://kiro.dev/docs/cli/autocomplete/)、[2.x 信任规则](https://kiro.dev/docs/cli/2x-reference/) |
@@ -26,9 +26,9 @@ AI 官方安装入口补充核对：2026-09-25；其他桌面应用、Oh My Zsh�
 
 0.1.40 默认采用 [安装方式汇总](installation.md) 中的分工：桌面先检查已有应用，缺失时下载官方 DMG；iTerm2/VS Code 使用 cask；AI CLI 优先官方脚本。`--managed-desktop` 保留自动放置桌面应用与 Kiro hook 配置。
 
-ChatGPT 使用固定 `https://persistent.oaistatic.com/codex-app-prod/Codex.dmg` 和同目录 appcast；Kiro IDE 从官方下载页选择 stable/arm64 DMG；Claude Desktop 从官方 RELEASES.json 读取版本与 ZIP 文件名，下载同目录、同名的 DMG（已核对当前官方发行包）。Chrome、Docker 使用官方滚动 DMG 入口。普通重跑复用摘要一致的包，`--update` 刷新；地址均在 sources.tsv。
+ChatGPT 使用固定 `https://persistent.oaistatic.com/codex-app-prod/Codex.dmg` 和同目录 appcast；Kiro IDE 从官方下载页选择 stable/arm64 DMG；Claude Desktop 仅在 `--with-claude` 启用后使用[官网下载页](https://claude.com/download)提供的 Universal 最新 DMG 重定向入口，不依赖版本查询；入口下载失败时回退到官方 RELEASES.json 对应的 DMG。托管模式仍使用版本 feed 校验应用。两个入口可能最终访问同一个下载域名，不能替代网络连通性修复。Chrome、Docker 使用官方滚动 DMG 入口。普通重跑复用摘要一致的包，`--update` 刷新；地址均在 sources.tsv。
 
-Claude Code CLI 与 Codex CLI 使用各自官方版本元数据和原生脚本。默认 Kiro CLI 直接运行 `https://cli.kiro.dev/install`，保留供应商的替换提示、启动及集成；托管模式才使用其官方 stable manifest 的 SHA-256 和 DMG。下载摘要用于复用/审计，不冒充独立供应商签名。
+Claude Code CLI 需 `--with-claude` 启用；它与 Codex CLI 使用各自官方版本元数据和原生脚本。默认 Kiro CLI 直接运行 `https://cli.kiro.dev/install`，保留供应商的替换提示、启动及集成；托管模式才使用其官方 stable manifest 的 SHA-256 和 DMG。下载摘要用于复用/审计，不冒充独立供应商签名。
 
 Homebrew 按官方 tap 中的 formula/cask 获取厂商软件，并检查定义中声明的校验和。不是所有 Cask 都有固定 SHA-256：Chrome 的滚动 DMG 为 `no_check`，自动化测试 另检查已安装应用的代码签名、bundle ID、arm64 架构和实际渲染；搜狗 Cask 则有固定 SHA-256；脚本拒绝非预期官方 HTTPS 地址或无固定摘要的定义，校验 ZIP 后才保存，并在报告中记录待手动安装。Homebrew 社区维护安装说明，并不代表供应商维护 Cask。脚本仍需执行的原生安装器（Homebrew、Oh My Zsh、Claude、Codex）通过 HTTPS 下载，保存本次下载的 SHA-256 后再运行；这个摘要提供审计线索，**不等于**独立供应商签名校验或版本锁定。不要把执行地址改成任意镜像、内部代理或来历不明的脚本。
 

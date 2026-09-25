@@ -27,11 +27,48 @@ class ConfigurationTests(unittest.TestCase):
 
     def apply(self, config_dir=ROOT / 'config'):
         with contextlib.redirect_stdout(io.StringIO()):
-            configure.configure(self.home, config_dir)
+            configure.configure(self.home, config_dir, with_claude=True)
 
     def snapshot(self):
         return {str(p.relative_to(self.home)): p.read_bytes()
                 for p in self.home.rglob('*') if p.is_file()}
+
+    def test_claude_configuration_is_opt_in_and_unselected_private_files_are_untouched(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            configure.configure(self.home, ROOT / 'config')
+            configure.verify(self.home)
+        self.assertFalse((self.home / '.claude').exists())
+        private = self.home / '.claude'
+        private.mkdir()
+        settings = private / 'settings.json'
+        settings.write_text('{invalid personal config')
+        before = self.snapshot()
+        with contextlib.redirect_stdout(io.StringIO()):
+            configure.configure(self.home, ROOT / 'config')
+            configure.verify(self.home)
+        self.assertEqual(self.snapshot(), before)
+        with self.assertRaises(ValueError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+        settings.unlink()
+        self.apply()
+        self.assertTrue(settings.is_file())
+        before = self.snapshot()
+        with contextlib.redirect_stdout(io.StringIO()):
+            configure.configure(self.home, ROOT / 'config')
+        self.assertEqual(self.snapshot(), before)
+
+    def test_configuration_cli_ignores_unselected_claude_override(self):
+        env = {**os.environ, 'HOME': str(self.home), 'CODEX_HOME': str(self.home / '.codex'),
+               'ZDOTDIR': str(self.home), 'CLAUDE_CONFIG_DIR': 'invalid-relative-path', 'SETUP_WITH_CLAUDE': 'false'}
+        command = ['python3', str(ROOT / 'scripts/configure.py')]
+        result = subprocess.run(command, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.home / '.claude').exists())
+        before = self.snapshot()
+        result = subprocess.run(command + ['--with-claude'], env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.snapshot(), before)
 
     def test_complete_template_contract(self):
         actual = {p.name: p.read_text() for p in sorted((ROOT / 'config').iterdir()) if p.name != '.DS_Store'}
@@ -43,7 +80,7 @@ class ConfigurationTests(unittest.TestCase):
         before = self.snapshot()
         self.apply()
         self.assertEqual(before, self.snapshot())
-        configure.verify(self.home)
+        configure.verify(self.home, with_claude=True)
         for path in ('.claude/settings.json', '.codex/config.toml', '.kiro/settings/permissions.yaml'):
             self.assertEqual((self.home / path).stat().st_mode & 0o777, 0o600)
         self.assertFalse((self.home / '.codex/auth.json').exists())
@@ -80,7 +117,7 @@ class ConfigurationTests(unittest.TestCase):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             configure.configure(self.home, ROOT / 'config')
-            configure.verify(self.home)
+            configure.verify(self.home, with_claude=True)
         self.assertIn('not audited', output.getvalue())
         self.assertEqual(configure.kiro_policy_status(self.home), 'custom-unreviewed')
         policy.write_text('   \n')
@@ -90,7 +127,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         policy.unlink()
         with self.assertRaises(FileNotFoundError):
-            configure.verify(self.home)
+            configure.verify(self.home, with_claude=True)
         for path in (policy, policy.parent, policy.parent.parent):
             with self.subTest(path=path):
                 if path.is_dir():
@@ -99,7 +136,7 @@ class ConfigurationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.apply()
                 with self.assertRaises(ValueError):
-                    configure.verify(self.home)
+                    configure.verify(self.home, with_claude=True)
                 path.unlink()
 
     def test_kiro_external_rule_contract(self):
@@ -180,7 +217,7 @@ class ConfigurationTests(unittest.TestCase):
         legacy = profile.with_name(profile.name + '.backup-legacy')
         legacy.write_bytes(old)
         with self.assertRaisesRegex(ValueError, 'DynamicProfiles'):
-            configure.verify(self.home)
+            configure.verify(self.home, with_claude=True)
         stale = profile.with_name('.' + profile.name + '12345678')
         stale.write_text('{incomplete')
         before = (legacy.read_bytes(), legacy.stat().st_mtime_ns, legacy.stat().st_mode)
@@ -266,6 +303,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_complete_package_iteration_survives_stdin_consumers(self):
         result = self.run_shell("""
+WITH_CLAUDE=true
 ensure_formula() { cat >/dev/null; echo "CHECK formula:$1"; }
 ensure_cask() { cat >/dev/null; echo "CHECK cask:$1"; }
 git() { :; }
@@ -765,16 +803,29 @@ execute_mode
 echo "TOTAL $COMPLETED_STEPS $STEP_TOTAL"
 """
         for enabled in ('false', 'true'):
-            result = self.run_shell(f'WITH_SOGOU={enabled}; ' + script)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertLess(result.stdout.index('CONFIGURED'), result.stdout.index('AGENT claude'))
-            self.assertLess(result.stdout.index('CONFIGURED'), result.stdout.index('AGENT codex'))
-            if enabled == 'true':
-                self.assertIn('TOTAL 55 55', result.stdout)
-                self.assertGreater(result.stdout.index('SOGOU-PREPARED'), result.stdout.index('VERIFIED'))
-            else:
-                self.assertIn('TOTAL 54 54', result.stdout)
-                self.assertNotIn('SOGOU-PREPARED', result.stdout)
+            for claude in ('false', 'true'):
+                result = self.run_shell(f'WITH_SOGOU={enabled}; WITH_CLAUDE={claude}; ' + script)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(result.stdout.index('CONFIGURED'), result.stdout.index('AGENT codex'))
+                self.assertEqual('AGENT claude' in result.stdout, claude == 'true')
+                self.assertEqual('app:claude-desktop' in result.stdout, claude == 'true')
+                if claude == 'true':
+                    self.assertLess(result.stdout.index('CONFIGURED'), result.stdout.index('AGENT claude'))
+                count = 52 + 2 * (claude == 'true') + (enabled == 'true')
+                self.assertIn(f'TOTAL {count} {count}', result.stdout)
+                if enabled == 'true':
+                    self.assertGreater(result.stdout.index('SOGOU-PREPARED'), result.stdout.index('VERIFIED'))
+                else:
+                    self.assertNotIn('SOGOU-PREPARED', result.stdout)
+
+    def test_claude_plan_requires_flag_even_with_managed_update_or_internal_environment(self):
+        for flags in ('', '--managed-desktop', '--update', '--managed-desktop --update'):
+            for selected in (False, True):
+                result = self.run_shell('main --plan ' + flags + (' --with-claude' if selected else ''),
+                                        env={'SETUP_WITH_CLAUDE': 'true'})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual('claude-desktop\t' in result.stdout, selected)
+                self.assertEqual('anthropic\t' in result.stdout, selected)
 
     def test_chrome_location_selection_and_no_duplicate_installation(self):
         for system, user in [('true', 'false'), ('false', 'true'), ('true', 'true'), ('false', 'false')]:

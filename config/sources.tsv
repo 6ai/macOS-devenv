@@ -32,3 +32,4 @@ google-chrome-download	distribution	https://dl.google.com/chrome/mac/universal/s
 docker-desktop-download	distribution	https://desktop.docker.com/mac/main/arm64/Docker.dmg
 claude-desktop-releases	metadata	https://downloads.claude.ai/releases/darwin/universal/RELEASES.json
 claude-desktop-distribution	distribution	https://downloads.claude.ai/releases/darwin/universal/
+claude-desktop-download	distribution	https://claude.ai/api/desktop/darwin/universal/dmg/latest/redirect

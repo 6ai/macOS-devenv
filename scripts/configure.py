@@ -77,9 +77,9 @@ def validate(claude, codex, profile):
         raise ValueError('iTerm2 profile needs Guid, Name and Keyboard Map')
 
 
-def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=None):
-    # Validate every input and preserved AI file before making any changes.
-    claude = (config_dir / 'claude-settings.json').read_text()
+def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=None, with_claude=False):
+    # Validate selected inputs and preserved AI files before making any changes.
+    claude = (config_dir / 'claude-settings.json').read_text() if with_claude else '{}'
     codex = (config_dir / 'codex-config.toml').read_text()
     profile = (config_dir / 'iterm2-profile.json').read_text()
     shell = (config_dir / 'shell.zsh').read_bytes()
@@ -93,12 +93,12 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     claude_path = (claude_home or home / '.claude') / 'settings.json'
     codex_path = (codex_home or home / '.codex') / 'config.toml'
     validate(
-        claude_path.read_text() if claude_path.exists() else claude,
+        claude_path.read_text() if with_claude and claude_path.exists() else claude,
         codex_path.read_text() if codex_path.exists() else codex,
         profile,
     )
     shell_home = shell_home or home
-    paths = [claude_path, codex_path, home / PROFILE_PATH,
+    paths = ([claude_path] if with_claude else []) + [codex_path, home / PROFILE_PATH,
              home / '.config/macos-setup/shell.zsh', home / '.config/macos-setup/env.zsh',
              home / VSCODE_PATH, home / KIRO_PATH, shell_home / '.zshrc', shell_home / '.zprofile']
     for path in paths:
@@ -110,7 +110,8 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     if (home / KIRO_PATH).exists():
         kiro_policy_status(home)
     migrate_profile_backups(home)
-    write(claude_path, claude.encode(), preserve=True)
+    if with_claude:
+        write(claude_path, claude.encode(), preserve=True)
     write(codex_path, codex.encode(), preserve=True)
     write(home / PROFILE_PATH, profile.encode(), backup_dir=home / PROFILE_BACKUP_PATH)
     write(home / '.config/macos-setup/shell.zsh', shell)
@@ -169,8 +170,8 @@ def report_kiro(home):
         print('Kiro custom policy preserved, not audited by setup. Review effective permissions inside Kiro before use.')
 
 
-def verify(home, codex_home=None, claude_home=None, shell_home=None):
-    validate(((claude_home or home / '.claude') / 'settings.json').read_text(),
+def verify(home, codex_home=None, claude_home=None, shell_home=None, with_claude=False):
+    validate(((claude_home or home / '.claude') / 'settings.json').read_text() if with_claude else '{}',
              ((codex_home or home / '.codex') / 'config.toml').read_text(),
              (home / PROFILE_PATH).read_text())
     if list((home / PROFILE_PATH).parent.glob('clean-setup.json.backup-*')):
@@ -193,11 +194,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config-dir', type=Path, default=ROOT / 'config')
     parser.add_argument('--verify', action='store_true')
+    parser.add_argument('--with-claude', action='store_true', default=os.environ.get('SETUP_WITH_CLAUDE') == 'true')
     args = parser.parse_args()
     # Resolve overrides only at the CLI boundary; tests that pass a temporary home stay isolated.
-    directories = {}
+    directories = {'with_claude': args.with_claude}
     for variable, key in [('CODEX_HOME', 'codex_home'), ('CLAUDE_CONFIG_DIR', 'claude_home'),
                           ('ZDOTDIR', 'shell_home')]:
+        if variable == 'CLAUDE_CONFIG_DIR' and not args.with_claude:
+            continue
         if os.environ.get(variable):
             directory = Path(os.environ[variable]).expanduser()
             if not directory.is_absolute():

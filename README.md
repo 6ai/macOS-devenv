@@ -19,14 +19,15 @@ cd macOS-devenv
 
 | 软件 | 默认方式 | 需要你完成的操作 |
 | --- | --- | --- |
-| Chrome、ChatGPT、Kiro IDE、Claude Desktop | 下载官方 DMG 到 `~/Downloads/macos-setup` | 打开 DMG、安装、首次登录或授权 |
+| Chrome、ChatGPT、Kiro IDE | 下载官方 DMG 到 `~/Downloads/macos-setup` | 打开 DMG、安装、首次登录或授权 |
 | Docker Desktop | 下载官方 Apple Silicon DMG 到同一目录 | 安装、首次启动及 Docker 引擎初始化 |
 | iTerm2、VS Code | Homebrew 官方 cask 自动安装 | 选择终端配置；扩展由脚本安装 |
-| Codex CLI、Claude Code CLI | 官方安装脚本 | 首次登录 |
+| Codex CLI | 官方安装脚本 | 首次登录 |
+| Claude Desktop、Claude Code CLI | 默认关闭；添加 `--with-claude` 才启用 | 桌面端下载 DMG 后手动安装，CLI 使用官方脚本 |
 | Kiro CLI | 官方安装脚本，保留官方启动和集成流程 | 在 Kiro 中完成 onboarding / 终端授权 |
 | Git、Go、Node、Python、uv 等开发工具 | Homebrew formula 自动安装 | 通常无需额外操作 |
 
-已有健康软件默认保留。DMG 下载完成会标为 `prepared`，末尾列出 `[MANUAL]` 待办；这表示安装包已准备好，**不表示桌面应用已安装**。完成待办后运行 `./setup.sh --verify`。
+已有健康软件默认保留。桌面阶段显示为 `app:*`；启用后的 Claude 桌面端优先使用官网最新 DMG 入口。DMG 下载完成会标为 `prepared`，末尾列出 `[MANUAL]` 待办；这表示安装包已准备好，**不表示桌面应用已安装**。完成待办后运行 `./setup.sh --verify`。
 
 需要自动放置桌面应用、配置 Kiro Zsh 集成时，显式选择托管模式：
 
@@ -45,11 +46,16 @@ cd macOS-devenv
 ./setup.sh --check-updates            # 只生成版本与配置差异报告
 ./setup.sh --configure-only           # 只应用公开配置模板
 ./setup.sh --verify                   # 严格检查实际安装；缺少桌面应用会失败
+./setup.sh --with-claude              # 可选启用 Claude Desktop 和 Claude Code CLI
 ./setup.sh --with-sogou               # 可选准备搜狗安装包，手动安装和启用
 ./setup.sh --docker-smoke             # Docker 启动后检查容器运行
 ```
 
-Kiro CLI 默认沿用官方应用/CLI 的更新器。桌面 DMG 从官方滚动入口或最新稳定版元数据获取；普通重跑复用校验通过的下载，`--update` 获取新包。未知或损坏的外部安装不会被静默覆盖。
+**Claude 默认不下载、不安装、不配置，也不纳入验证或更新检查。** 需要它们时使用 `./setup.sh --with-claude`；之后重跑、验证或更新时继续带上该参数，例如 `./setup.sh --with-claude --verify`。`--managed-desktop` 本身不会启用 Claude。已有 Claude 安装和私人配置保持不动。
+
+Zsh 使用系统自带版本，不更改登录 shell。健康的 Oh My Zsh 普通重跑不会下载或更新；已有主题、插件和个人配置保留，受管配置变化前先备份。只有 `--update` 才对干净的官方 Oh My Zsh checkout 做快进更新；自定义或不完整目录不会被覆盖。
+
+Kiro CLI 默认沿用官方应用/CLI 的更新器。桌面 DMG 从官方滚动入口或最新稳定版元数据获取；普通重跑复用校验通过的下载，`--update` 获取新包。未知或损坏的外部安装不会被静默覆盖。0.1.41 增加了强制中断恢复测试：CLI 半成品、桌面应用替换及会话锁会在重跑时重新核查；安装子进程仍运行时会拒绝并发重跑。网络、磁盘或权限问题仍需先排除，不能保证任意断电或外部改动都能自动恢复。
 
 更新本仓库：
 

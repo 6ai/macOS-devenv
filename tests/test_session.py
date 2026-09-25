@@ -22,7 +22,7 @@ class SessionTests(unittest.TestCase):
         self.logs = self.root / 'logs'
 
     def command(self, body):
-        return ['bash', '-c', 'source "$1"; ' + body.strip() + '; run_session "$2"',
+        return ['/bin/bash', '-c', 'source "$1"; ' + body.strip() + '; run_session "$2"',
                 'test', str(ROOT / 'setup.sh'), str(self.logs)]
 
     def run_session(self, body, env=None):
@@ -62,6 +62,18 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(report['manual_steps'], ['chatgpt', 'docker-desktop'])
         self.assertIn('[MANUAL]', result.stdout)
         self.assertIn('still need your action', result.stdout)
+
+    def test_app_display_does_not_imply_homebrew_and_keeps_machine_ids(self):
+        result = self.run_session('execute_mode() { step_run cask:claude-desktop true; }')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('app:claude-desktop', result.stdout)
+        self.assertNotIn('cask:claude-desktop', result.stdout)
+        events = next(self.logs.glob('*/events.tsv')).read_text()
+        self.assertIn('cask:claude-desktop', events)
+        result = self.run_session('execute_mode() { step_run cask:claude-desktop false; }')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('[FAILED] app:claude-desktop', result.stdout)
+        self.assertIn('cask:claude-desktop', {r['last_step'] for r in self.reports()})
 
     def test_failure_and_resume_use_actual_state(self):
         marker = shlex.quote(str(self.root / 'installed'))
@@ -118,11 +130,13 @@ execute_mode() {{ STEP_TOTAL=2; step_run first first; step_run second second; }}
                 self.assertFalse((self.logs / 'install.lock').exists())
         self.assertEqual({report['exit_code'] for report in self.reports()}, {22, 130, 143})
 
-    def test_dead_lock_recovery_and_ambiguous_lock_rejection(self):
+    def test_legacy_dead_and_empty_lock_recovery(self):
         lock = self.logs / 'install.lock'
         lock.mkdir(parents=True)
         result = self.run_session('execute_mode() { :; }')
-        self.assertEqual(result.returncode, 75)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lock.mkdir()
+        (self.logs / 'recovery.lock').mkdir()
         (lock / 'owner.pid').write_text('99999999\n')
         result = self.run_session('execute_mode() { :; }')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -131,12 +145,12 @@ execute_mode() {{ STEP_TOTAL=2; step_run first first; step_run second second; }}
     def test_concurrent_process_is_rejected(self):
         release = self.root / 'release'
         body = f'wait_for_release() {{ while [[ ! -f {shlex.quote(str(release))} ]]; do sleep 0.05; done; }}; '
-        body += 'execute_mode() { STEP_TOTAL=1; step_run wait wait_for_release; }'
+        body += 'execute_mode() { touch "$RUN_DIR/ready"; STEP_TOTAL=1; step_run wait wait_for_release; }'
         process = subprocess.Popen(self.command(body),
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         try:
             deadline = time.monotonic() + 5
-            while not (self.logs / 'install.lock/owner.pid').exists() and time.monotonic() < deadline:
+            while not list(self.logs.glob('*/ready')) and time.monotonic() < deadline:
                 time.sleep(0.01)
             result = self.run_session('execute_mode() { :; }')
             self.assertEqual(result.returncode, 75)
@@ -200,7 +214,7 @@ execute_mode() {
         base = {key:value for key,value in os.environ.items()
                 if key not in ('SETUP_COLOR', 'SETUP_ICONS', 'NO_COLOR', 'CI', 'GITHUB_ACTIONS', 'LC_ALL', 'LC_CTYPE')}
         base.update(TERM='xterm-256color', LANG='en_US.UTF-8')
-        args = ['bash', '-c', 'source "$1"; ui_init; ui_print warn "[WARN] sample"', 'test', str(ROOT / 'setup.sh')]
+        args = ['/bin/bash', '-c', 'source "$1"; ui_init; ui_print warn "[WARN] sample"', 'test', str(ROOT / 'setup.sh')]
         cases = [({}, False, False), ({'SETUP_COLOR':'always', 'SETUP_ICONS':'emoji'}, True, True),
                  ({'SETUP_COLOR':'always', 'NO_COLOR':'1'}, False, False),
                  ({'SETUP_COLOR':'always', 'TERM':'dumb'}, False, False)]
@@ -261,9 +275,19 @@ execute_mode() {
         self.assertEqual(process.returncode, 0)
         self.assertIn('PROMPT-WITHOUT-NEWLINE', next(self.logs.glob('*/run.log')).read_text())
 
+    def test_default_network_does_not_contact_claude(self):
+        result = self.run_session('''MODE=diagnose
+curl() { case "$*" in *claude*) return 99;; *) echo 200;; esac; }
+execute_mode() { STEP_TOTAL=1; step_run network network_check; }
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('anthropic', next(self.logs.glob('*/network.tsv')).read_text())
+        self.assertIs(self.reports()[0]['with_claude'], False)
+
     def test_network_statuses_and_diagnostics_failure(self):
         body = '''
 MODE=diagnose
+WITH_CLAUDE=true
 curl() { case "$*" in *claude.ai*) echo 503;; *ghcr.io*) echo 401;; *) echo 200;; esac; }
 execute_mode() { STEP_TOTAL=1; step_run network network_check; }
 '''

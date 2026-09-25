@@ -48,6 +48,7 @@ setup.sh
 tests/fixtures/config-golden.json
 tests/test_desktop.py
 tests/test_editor.py
+tests/test_interruptions.py
 tests/test_kiro_shell.py
 tests/test_maintenance.py
 tests/test_official_ai.py
