@@ -31,7 +31,7 @@ AI CLIs use official installers. Healthy existing tools are preserved.
 --verify          Check packages, executables, applications and configuration.
 --diagnose        Record environment and official-source network reachability only.
 --docker-smoke    Build and run a linux/amd64 container on a running Docker engine.
---config-dir DIR  Use nine external configuration templates (copy config/ first).
+--config-dir DIR  Use ten external configuration templates (copy config/ first).
 --log-dir DIR     Store private run logs here instead of ~/.local/state/macos-setup.
 --help            Show this help.
 Failures return nonzero. Fix the cause and rerun the same command; healthy tools are skipped.

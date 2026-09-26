@@ -142,14 +142,15 @@ class ConfigurationTests(unittest.TestCase):
                  '.codex/auth.json': '{"existing":"credential"}\n',
                  '.kiro/settings/permissions.yaml': 'rules:\n  - capability: shell\n    effect: allow\n',
                  '.kiro/auth.json': '{"existing":"credential"}\n',
-                 '.zshrc': 'export PERSONAL=yes\n', '.zprofile': '# personal profile\n'}
+                 '.zshrc': 'export PERSONAL=yes\n', '.zprofile': '# personal profile\n',
+                 '.vimrc': 'set ignorecase\n'}
         for name, text in files.items():
             target = self.home / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text)
         self.apply()
         for name, text in files.items():
-            if name in ('.zshrc', '.zprofile'):
+            if name in ('.zshrc', '.zprofile', '.vimrc'):
                 self.assertTrue((self.home / name).read_text().startswith(text))
                 backups = list(self.home.glob(name + '.backup-*'))
                 self.assertEqual(len(backups), 1)
@@ -159,6 +160,22 @@ class ConfigurationTests(unittest.TestCase):
         before = self.snapshot()
         self.apply()
         self.assertEqual(self.snapshot(), before)
+        self.assertEqual((self.home / '.vimrc').read_text().splitlines().count(configure.VIM_SOURCE_LINE), 1)
+
+    def test_vim_template_loads_core_defaults(self):
+        executable = shutil.which('vim')
+        if not executable:
+            self.skipTest('vim is unavailable')
+        self.apply()
+        result_file = self.home / 'vim-options.txt'
+        expression = "call writefile([string(&number), string(&expandtab), string(&shiftwidth), " \
+                     "string(&tabstop), string(&modelines), string(&swapfile)], " \
+                     + json.dumps(str(result_file)) + ")"
+        result = subprocess.run([executable, '-Nu', str(self.home / '.vimrc'), '-es', '-i', 'NONE',
+                                 '-c', expression, '-c', 'qall!'], capture_output=True, text=True,
+                                env={**os.environ, 'HOME': str(self.home)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result_file.read_text().splitlines(), ['1', '1', '4', '4', '0', '0'])
 
     def test_kiro_policy_reporting_and_missing_empty_or_symlink_rejection(self):
         self.apply()
@@ -252,6 +269,32 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertTrue((self.home / '.zshrc').is_symlink())
 
+    def test_vimrc_symlink_is_not_replaced(self):
+        target = self.home / 'personal-vimrc'
+        target.write_text('set nonumber\n')
+        (self.home / '.vimrc').symlink_to(target)
+        before = self.snapshot()
+        with self.assertRaises(ValueError):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(target.read_text(), 'set nonumber\n')
+        self.assertTrue((self.home / '.vimrc').is_symlink())
+
+    def test_vim_verify_rejects_symlink_entry_and_managed_files(self):
+        self.apply()
+        for index, relative in enumerate(('.vimrc', '.config/macos-setup/vimrc')):
+            with self.subTest(relative=relative):
+                path = self.home / relative
+                content = path.read_bytes()
+                target = self.home / f'vim-target-{index}'
+                target.write_bytes(content)
+                path.unlink()
+                path.symlink_to(target)
+                with self.assertRaisesRegex(ValueError, 'symlinks'):
+                    configure.verify(self.home, with_claude=True)
+                path.unlink()
+                path.write_bytes(content)
+
     def test_managed_file_update_keeps_backup(self):
         self.apply()
         path = self.home / '.config/macos-setup/shell.zsh'
@@ -260,6 +303,12 @@ class ConfigurationTests(unittest.TestCase):
         backups = list(path.parent.glob('shell.zsh.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), '# old managed content\n')
+        vim = self.home / '.config/macos-setup/vimrc'
+        vim.write_text('" old managed vim content\n')
+        self.apply()
+        backups = list(vim.parent.glob('vimrc.backup-*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), '" old managed vim content\n')
 
     def test_iterm_updates_keep_backups_and_temporary_files_outside_watched_folder(self):
         self.apply()

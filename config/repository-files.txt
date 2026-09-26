@@ -21,6 +21,7 @@ config/kiro-permissions.json
 config/repository-files.txt
 config/shell.zsh
 config/sources.tsv
+config/vimrc
 config/vscode-extensions.txt
 config/vscode-settings.json
 docs/automation.md

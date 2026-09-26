@@ -7,6 +7,7 @@
 | `codex-config.toml` | `${CODEX_HOME:-~/.codex}/config.toml`；工作区写入、按需确认；已有文件保留 |
 | `env.zsh` | `~/.config/macos-setup/env.zsh`；Homebrew、AI CLI、Docker、Go 工具和 VS Code 的 PATH |
 | `shell.zsh` | `~/.config/macos-setup/shell.zsh`；Oh My Zsh、历史、快捷键、常用别名 |
+| `vimrc` | `~/.config/macos-setup/vimrc`；UTF-8、语法高亮、行号、四空格缩进、空白字符显示和命令纠错 |
 | `git-defaults.json` | 只向 Git global config 补入缺失的通用行为和 alias；已有值保留 |
 | `gitignore-global` | 新环境安装到 `~/.config/macos-setup/gitignore-global`；已有 `core.excludesFile` 及文件保留 |
 | `vscode-settings.json` | `~/Library/Application Support/Code/User/settings.json`；仅新环境写入，已有 JSON/JSONC 原样保留 |
@@ -16,7 +17,7 @@
 
 ```bash
 cp -R config local-config
-# 编辑 local-config 中的九个模板
+# 编辑 local-config 中的十个模板
 ./setup.sh --config-dir ./local-config
 # 只应用配置，需要 Python 3.11+
 ./setup.sh --configure-only --config-dir ./local-config
@@ -24,11 +25,25 @@ cp -R config local-config
 
 若升级前已创建外部配置目录，需要把 `config/git-defaults.json` 和 `config/gitignore-global` 连同其他模板同步到该目录；缺少新模板时配置步骤会明确报错。
 
-外部目录只控制九个模板，不改变包清单和执行下载地址。已有 AI 文件始终保留；Git 默认值也只补缺失项。需要变更现有 AI 配置时直接编辑其安装位置。旧环境迁移时，旧 shell、Git 或 AI 配置里的个人设置仍由使用者审阅。
+外部目录只控制十个模板，不改变包清单和执行下载地址。已有 AI 文件始终保留；Git 默认值也只补缺失项。需要变更现有 AI 配置时直接编辑其安装位置。旧环境迁移时，旧 shell、Vim、Git 或 AI 配置里的个人设置仍由使用者审阅。
 
-覆盖项目管理的 env/shell/iTerm2 文件前会生成 `.backup-*` 备份；修改 `.zshrc`/`.zprofile` 时也备份原文件。写入采用同目录临时文件与原子替换，相同内容跳过，source 行不重复添加。目标文件为符号链接时退出，避免破坏其他 dotfiles 管理器。
+覆盖项目管理的 env/shell/Vim/iTerm2 文件前会生成 `.backup-*` 备份；修改 `.zshrc`/`.zprofile`/`.vimrc` 时也备份原文件。写入采用同目录临时文件与原子替换，相同内容跳过，source 行不重复添加。目标文件为符号链接时退出，避免破坏其他 dotfiles 管理器。
 
 恢复配置时，在相关应用退出后，从相应 `.backup-*` 中选取需要的版本，先检查内容，再复制回同名原文件。没有自动批量删除备份或恢复私人设置的命令。
+
+### Vim
+
+安装器把通用 Vim 配置放在 `~/.config/macos-setup/vimrc`，只在用户的 `~/.vimrc` 中维护一行安全加载语句。已有 `.vimrc` 的首尾内容都保留；首次增加加载语句以及受管模板更新前分别生成 `.backup-*`。重复运行不重复加载，也不改动相同文件的时间戳。若 `.vimrc` 或受管文件是符号链接，配置步骤会退出，由原 dotfiles 管理方式自行添加加载语句。
+
+默认行为来自经过筛选的本机通用配置：UTF-8、关闭 modeline、启用语法高亮与绝对行号、显示标尺、Tab 展开为四个空格，并用可见符号标出 Tab 和行尾空格；同时兼容误输入的 `:W`、`:Q`、`:Wq` 等命令。它不安装插件、不设置主题，也不包含内部路径或项目配置。模板沿用本机约定，关闭 swap、undo 和 backup 文件；未保存内容不会由这些文件恢复，重要编辑应及时写入或另行在加载行之后覆盖该选择。
+
+首次安装通常把加载语句追加到现有 `.vimrc` 末尾。需要覆盖默认值时，把个人设置放在该行之后，例如：
+
+```vim
+" macos-setup managed source line is above this block
+set nolist
+set undofile
+```
 
 ### Zsh、Oh My Zsh 与环境变量
 

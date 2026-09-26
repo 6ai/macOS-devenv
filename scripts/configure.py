@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install public templates; preserve personal AI settings and back up shell edits."""
+"""Install public templates; preserve personal settings and back up entry files."""
 
 import argparse
 import json
@@ -13,6 +13,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LINE = '[ -f "$HOME/.config/macos-setup/shell.zsh" ] && source "$HOME/.config/macos-setup/shell.zsh"'
 ENV_SOURCE_LINE = '[ -f "$HOME/.config/macos-setup/env.zsh" ] && source "$HOME/.config/macos-setup/env.zsh"'
+VIM_SOURCE_LINE = "if filereadable(expand('$HOME/.config/macos-setup/vimrc')) | execute 'source ' . fnameescape(expand('$HOME/.config/macos-setup/vimrc')) | endif"
 PROFILE_PATH = Path('Library/Application Support/iTerm2/DynamicProfiles/clean-setup.json')
 PROFILE_BACKUP_PATH = PROFILE_PATH.parent.parent / 'macos-setup-backups'
 VSCODE_PATH = Path('Library/Application Support/Code/User/settings.json')
@@ -215,6 +216,7 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     profile = (config_dir / 'iterm2-profile.json').read_text()
     shell = (config_dir / 'shell.zsh').read_bytes()
     environment = (config_dir / 'env.zsh').read_bytes()
+    vim = (config_dir / 'vimrc').read_bytes()
     vscode = (config_dir / 'vscode-settings.json').read_bytes()
     kiro = (config_dir / 'kiro-permissions.json').read_bytes()
     git_defaults = validate_git_defaults((config_dir / 'git-defaults.json').read_text())
@@ -236,6 +238,7 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     shell_home = shell_home or home
     paths = ([claude_path] if with_claude else []) + [codex_path, home / PROFILE_PATH,
              home / '.config/macos-setup/shell.zsh', home / '.config/macos-setup/env.zsh',
+             home / '.config/macos-setup/vimrc', home / '.vimrc',
              home / GIT_IGNORE_PATH, home / VSCODE_PATH, home / KIRO_PATH,
              shell_home / '.zshrc', shell_home / '.zprofile']
     for path in paths:
@@ -254,6 +257,7 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     write(home / PROFILE_PATH, profile.encode(), backup_dir=home / PROFILE_BACKUP_PATH)
     write(home / '.config/macos-setup/shell.zsh', shell)
     write(home / '.config/macos-setup/env.zsh', environment)
+    write(home / '.config/macos-setup/vimrc', vim)
     # Existing VS Code settings may be JSONC. Preserve their bytes, including comments.
     write(home / VSCODE_PATH, vscode, preserve=True)
     # JSON is valid YAML. Personal YAML policies remain byte-for-byte intact.
@@ -273,6 +277,12 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
         if line not in content.splitlines():
             content = content.rstrip('\n') + '\n\n' + line + '\n'
         write(path, content.encode())
+    path = home / '.vimrc'
+    content = path.read_text() if path.exists() else ''
+    if VIM_SOURCE_LINE not in content.splitlines():
+        content = content.rstrip('\n')
+        content = (content + '\n\n' if content else '') + VIM_SOURCE_LINE + '\n'
+    write(path, content.encode())
 
 
 def validate_kiro(content):
@@ -318,6 +328,12 @@ def verify(home, codex_home=None, claude_home=None, shell_home=None, with_claude
         raise ValueError('Missing shell configuration')
     if not (home / '.config/macos-setup/env.zsh').is_file() or not (home / VSCODE_PATH).is_file():
         raise ValueError('Missing environment or VS Code configuration')
+    vim = home / '.config/macos-setup/vimrc'
+    vim_entry = home / '.vimrc'
+    if vim.is_symlink() or vim_entry.is_symlink():
+        raise ValueError('Vim configuration files must not be symlinks')
+    if not vim.is_file() or vim.read_bytes() != (config_dir / 'vimrc').read_bytes():
+        raise ValueError('Managed Vim configuration differs from the selected template')
     if any(path.is_symlink() for path in (home / '.kiro', home / '.kiro/settings', home / KIRO_PATH)):
         raise ValueError('Kiro permission file must not be a symlink')
     verify_git(home, validate_git_defaults((config_dir / 'git-defaults.json').read_text()),
@@ -327,6 +343,8 @@ def verify(home, codex_home=None, claude_home=None, shell_home=None, with_claude
         line = ENV_SOURCE_LINE if name == '.zprofile' else SOURCE_LINE
         if ((shell_home or home) / name).read_text().splitlines().count(line) != 1:
             raise ValueError(f'{name}: expected exactly one configuration source line')
+    if vim_entry.read_text().splitlines().count(VIM_SOURCE_LINE) != 1:
+        raise ValueError('.vimrc: expected exactly one configuration source line')
     print('Configuration files verified.')
 
 

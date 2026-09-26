@@ -25,6 +25,7 @@ TEMPLATES = {
     'kiro-permissions.json': (None, '.kiro/settings/permissions.yaml', True),
     'env.zsh': (None, '.config/macos-setup/env.zsh', False),
     'shell.zsh': (None, '.config/macos-setup/shell.zsh', False),
+    'vimrc': (None, '.config/macos-setup/vimrc', False),
     'iterm2-profile.json': (None, 'Library/Application Support/iTerm2/DynamicProfiles/clean-setup.json', False),
     'vscode-settings.json': (None, 'Library/Application Support/Code/User/settings.json', True),
 }

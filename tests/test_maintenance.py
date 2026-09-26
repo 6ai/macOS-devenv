@@ -107,7 +107,7 @@ class MaintenanceTests(unittest.TestCase):
         expected = ({'formula:' + name for name in self.formulae} | {'cask:' + name for name in self.casks}
                     | {'vscode:' + name for name in self.extensions}
                     | {'config:' + name for name in ('claude-settings.json', 'codex-config.toml', 'kiro-permissions.json',
-                       'env.zsh', 'shell.zsh', 'iterm2-profile.json', 'vscode-settings.json')}
+                       'env.zsh', 'shell.zsh', 'vimrc', 'iterm2-profile.json', 'vscode-settings.json')}
                     | {'cli:claude', 'cli:codex', 'homebrew', 'setup-repository', 'ohmyzsh', 'macos'})
         self.assertEqual({item['component'] for item in report['items']}, expected)
         self.assertEqual(len(report['items']), len(expected))
