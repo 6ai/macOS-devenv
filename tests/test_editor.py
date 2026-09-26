@@ -206,6 +206,7 @@ gps1 --dry-run
             'lsmax': "find . -type f -not -path '*/\\.git/*' -print0 | xargs -0r stat -f '%z %N' | sort -nr | head -10",
             'lslast': "find . -type f -not -path '*/\\.git/*' -print0 | xargs -0r stat -f '%Sm %N' -t '%Y-%m-%d %T' | sort -nr | head -10",
             'gmd': 'git checkout master && git pull && git remote prune origin',
+            'gmtag': 'TZ=UTC git --no-pager show --quiet --abbrev=12 --date="format-local:%Y%m%d%H%M%S" --format="v0.0.0-%cd-%h"',
             'reload': '. ~/.zshrc',
             'e': 'exit',
         }
@@ -271,7 +272,11 @@ dl https://example/file out.bin
         self.assertNotIn('function', result.stdout)
 
     def test_all_helper_function_alias_collisions_and_reload(self):
-        names = 'gpre gps1 mkcd mcd d cdf o dl mktgz mkzip tfind jv jp jsonview pcat sha1 sha224 sha256 sha384 sha512 gci gcia git_corb git_ignore git_readme tn tad to tkss tmuxconf tds cn gcv dkclear fingerprint'.split()
+        names = ('gpre gps1 mkcd mcd d cdf o dl mktgz mkzip tfind ff jv jp jsonview pcat '
+                 'sha1 sha224 sha256 sha384 sha512 sha512224 sha512256 gci gcia git_corb '
+                 'git_ignore git_readme tn tad to tkss tmuxconf tds cn gcv dkclear fingerprint '
+                 'ffmpeg2wav ffmpeg2pcm video2wav pcm2wav heic2jpg png2jpg webp2png svg2png '
+                 'transpng img_trans img_pure_jpg img_pure_png new_bash').split()
         prefix = '\n'.join(f"alias {name}='print WRONG'" for name in names)
         result = self.zsh(prefix + '\nsource "$1"\nsource "$1"\nwhence -w ' + ' '.join(names))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -597,6 +602,63 @@ print -rl -- $path
             self.assertEqual(len(entries), len(set(entries)))
             for path in [self.home / '.local/bin', *expected]:
                 self.assertIn(str(path), entries)
+            for path in expected:
+                self.assertGreater(entries.index(str(path)), entries.index(str(self.home / '.local/bin')))
+
+    def test_go_environment_uses_persisted_workspace_and_binary_directory(self):
+        go = self.home / '.local/bin/go'
+        goenv = self.home / 'persisted-go-env'
+        goenv.write_text(f'GOBIN={self.home / "custom go bin"}\n')
+        go.write_text('#!/bin/sh\ncase "$*" in\n  "env GOPATH") echo "$HOME/persisted go";;\n'
+                      '  "env GOENV") echo "$HOME/persisted-go-env";;\n'
+                      '  "env GOBIN") echo "$HOME/derived bin must not be used";;\nesac\n')
+        go.chmod(0o755)
+        result = self.zsh('unset GOPATH GOBIN; source "$1"; '
+                          'print -rl -- "$GOPATH" "$GOBIN" "${path[(Ie)$GOBIN]}"', interactive=False)
+        expected = [str(self.home / 'persisted go'), str(self.home / 'custom go bin')]
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[:2], expected)
+        self.assertGreater(int(lines[2]), 0)
+
+    def test_go_derived_gobin_does_not_hide_secondary_gopath(self):
+        go = self.home / '.local/bin/go'
+        go.write_text('#!/bin/sh\ncase "$*" in\n  "env GOENV") echo "$HOME/missing-go-env";;\n'
+                      '  "env GOBIN") echo "$HOME/a/bin";;\nesac\n')
+        go.chmod(0o755)
+        result = self.zsh('unset GOBIN; GOPATH="$HOME/a:$HOME/b"; source "$1"; '
+                          'print -rl -- "${GOBIN-unset}" "${path[(Ie)$HOME/a/bin]}" '
+                          '"${path[(Ie)$HOME/b/bin]}"', interactive=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(lines[0], 'unset')
+        self.assertGreater(int(lines[1]), 0)
+        self.assertGreater(int(lines[2]), 0)
+
+    def test_portable_file_media_and_script_helpers(self):
+        target = self.home / 'two words.mp4'
+        target.write_bytes(b'fixture')
+        calls = self.home / 'calls'
+        self.env['SETUP_CALLS'] = str(calls)
+        for name in ('ffmpeg', 'magick', 'sips'):
+            executable = self.home / '.local/bin' / name
+            executable.write_text('#!/bin/sh\nprintf "%s" "${0##*/}" >>"$SETUP_CALLS"\n'
+                                  'for arg in "$@"; do printf " <%s>" "$arg" >>"$SETUP_CALLS"; done\n'
+                                  'printf "\\n" >>"$SETUP_CALLS"\n')
+            executable.chmod(0o755)
+        result = self.zsh('source "$1"; ffmpeg2wav "$HOME/two words.mp4"; '
+                          'transpng "$HOME/two words.mp4"; new_bash "$HOME/new script.sh"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = calls.read_text().splitlines()
+        self.assertEqual(len(rows), 2)
+        self.assertIn('two words.mp4>', rows[0])
+        self.assertIn('two words-trans.png>', rows[1])
+        script = self.home / 'new script.sh'
+        self.assertTrue(script.stat().st_mode & 0o100)
+        self.assertIn('set -euo pipefail', script.read_text())
+        result = self.zsh('source "$1"; new_bash "$HOME/new script.sh"')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('refusing to overwrite', result.stderr)
 
     def test_codex_desktop_all_locations_identity_and_independent_cli(self):
         paths = ['/Applications/ChatGPT.app', str(self.home / 'Applications/ChatGPT.app'),

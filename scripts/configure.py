@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import tempfile
 import tomllib
 
@@ -16,6 +17,12 @@ PROFILE_PATH = Path('Library/Application Support/iTerm2/DynamicProfiles/clean-se
 PROFILE_BACKUP_PATH = PROFILE_PATH.parent.parent / 'macos-setup-backups'
 VSCODE_PATH = Path('Library/Application Support/Code/User/settings.json')
 KIRO_PATH = Path('.kiro/settings/permissions.yaml')
+GIT_IGNORE_PATH = Path('.config/macos-setup/gitignore-global')
+GIT_DEFAULT_SECTIONS = {
+    'alias', 'branch', 'color', 'commit', 'core', 'delta', 'diff', 'difftool', 'fetch', 'help', 'init',
+    'interactive', 'merge', 'mergetool', 'pull', 'push', 'rebase', 'rerere', 'tag',
+}
+GIT_PRIVATE_SECTIONS = {'credential', 'filter', 'http', 'include', 'includeif', 'user', 'url'}
 
 
 def write(path, content, preserve=False, backup_dir=None):
@@ -77,6 +84,130 @@ def validate(claude, codex, profile):
         raise ValueError('iTerm2 profile needs Guid, Name and Keyboard Map')
 
 
+def validate_git_defaults(content):
+    data = json.loads(content)
+    if not isinstance(data, dict) or not data:
+        raise ValueError('Git defaults must be a nonempty JSON object')
+    for key, value in data.items():
+        if (not isinstance(key, str) or not isinstance(value, str) or not value
+                or not all(part and part.replace('-', '').isalnum() for part in key.split('.'))):
+            raise ValueError('Git defaults require dotted string keys and nonempty string values')
+        section = key.split('.', 1)[0].lower()
+        if section in GIT_PRIVATE_SECTIONS or section not in GIT_DEFAULT_SECTIONS:
+            raise ValueError(f'Private or unsupported Git configuration section: {section}')
+    lowered = content.lower()
+    if any(marker in lowered for marker in ('/users/', '@users.noreply.', 'proxy', 'corp.', 'private-host')):
+        raise ValueError('Git defaults contain a personal or internal marker')
+    return data
+
+
+def validate_git_ignore(content):
+    text = content.decode()
+    if not any(line.strip() and not line.lstrip().startswith('#') for line in text.splitlines()):
+        raise ValueError('Git global ignore template must contain patterns')
+    lowered = text.lower()
+    if any(marker in lowered for marker in ('/users/', 'corp.', 'private-host', 'credential', 'token')):
+        raise ValueError('Git global ignore contains a personal or internal marker')
+    return content
+
+
+def git_environment(home):
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith('GIT_CONFIG_') and key != 'XDG_CONFIG_HOME'}
+    env.update(HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'), GIT_CONFIG_NOSYSTEM='1',
+               GIT_TERMINAL_PROMPT='0', GIT_OPTIONAL_LOCKS='0')
+    return env
+
+
+def inherited_lock_fd():
+    try:
+        os.fstat(9)
+    except OSError:
+        return ()
+    return (9,)
+
+
+def git_config(home, *args, check=True):
+    result = subprocess.run(['git', 'config', '--global', '--includes', *args], text=True,
+                            capture_output=True, env=git_environment(home), pass_fds=inherited_lock_fd())
+    if check and result.returncode:
+        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else 'unknown Git error'
+        raise ValueError('Git global configuration cannot be read or updated: ' + detail)
+    return result
+
+
+def git_values(home):
+    if not (home / '.gitconfig').exists() and not (home / '.config/git/config').exists():
+        return {}
+    result = git_config(home, '--null', '--list')
+    values = {}
+    for record in result.stdout.split('\0'):
+        if not record:
+            continue
+        key, separator, value = record.partition('\n')
+        if not separator:
+            raise ValueError('Git returned a malformed global configuration entry')
+        values.setdefault(key.lower(), []).append(value)
+    return values
+
+
+def backup_git_config(home):
+    source = home / '.gitconfig'
+    if not source.exists():
+        return
+    if source.is_symlink() or not source.is_file():
+        raise ValueError(f'Refusing to update non-regular Git configuration: {source}')
+    destination = home / '.config/macos-setup/backups'
+    if destination.is_symlink():
+        raise ValueError(f'Refusing symlink Git backup directory: {destination}')
+    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, backup = tempfile.mkstemp(prefix='gitconfig.backup-', dir=destination)
+    os.close(fd)
+    shutil.copy2(source, backup)
+    os.chmod(backup, 0o600)
+    print(f'Backed up Git configuration: {backup}')
+
+
+def configure_git(home, defaults, ignore, current=None):
+    current = current if current is not None else git_values(home)
+    missing = [(key, value) for key, value in defaults.items() if key.lower() not in current]
+    global_config = home / '.gitconfig'
+    if missing and global_config.is_symlink():
+        raise ValueError(f'Refusing to update symlink Git configuration: {global_config}')
+    if missing:
+        backup_git_config(home)
+    desired_ignore = defaults['core.excludesFile']
+    active_ignore = current.get('core.excludesfile', [])
+    if not active_ignore or desired_ignore in active_ignore:
+        write(home / GIT_IGNORE_PATH, ignore)
+    else:
+        print('Preserved: existing Git core.excludesFile and its contents')
+    if missing:
+        for key, value in missing:
+            git_config(home, '--add', key, value)
+    remaining = [key for key in defaults if key.lower() not in git_values(home)]
+    if remaining:
+        raise ValueError('Git defaults remain missing after configuration: ' + ', '.join(remaining))
+    print(f'Git defaults ready: added {len(missing)}, preserved {len(defaults) - len(missing)} existing values.')
+
+
+def verify_git(home, defaults, ignore):
+    values = git_values(home)
+    missing = [key for key in defaults if key.lower() not in values]
+    if missing:
+        raise ValueError('Missing Git defaults; rerun --configure-only: ' + ', '.join(missing))
+    result = git_config(home, '--path', '--get', 'core.excludesFile')
+    path = Path(result.stdout.strip())
+    if not path.is_absolute():
+        path = home / path
+    if not path.is_file() or not os.access(path, os.R_OK):
+        raise ValueError(f'Git global ignore file is missing or unreadable: {path}')
+    managed = home / GIT_IGNORE_PATH
+    if path.resolve() == managed.resolve() and path.read_bytes() != ignore:
+        raise ValueError('Managed Git global ignore file differs from the selected template')
+    print('Git defaults and global ignore verified; identity and credentials remain user-owned.')
+
+
 def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=None, with_claude=False):
     # Validate selected inputs and preserved AI files before making any changes.
     claude = (config_dir / 'claude-settings.json').read_text() if with_claude else '{}'
@@ -86,6 +217,11 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     environment = (config_dir / 'env.zsh').read_bytes()
     vscode = (config_dir / 'vscode-settings.json').read_bytes()
     kiro = (config_dir / 'kiro-permissions.json').read_bytes()
+    git_defaults = validate_git_defaults((config_dir / 'git-defaults.json').read_text())
+    git_ignore = validate_git_ignore((config_dir / 'gitignore-global').read_bytes())
+    current_git = git_values(home)
+    if any(key.lower() not in current_git for key in git_defaults) and (home / '.gitconfig').is_symlink():
+        raise ValueError(f'Refusing to update symlink Git configuration: {home / ".gitconfig"}')
     validate_kiro(kiro)
     if not isinstance(json.loads(vscode), dict):
         raise ValueError('VS Code defaults must be a JSON object')
@@ -100,7 +236,8 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     shell_home = shell_home or home
     paths = ([claude_path] if with_claude else []) + [codex_path, home / PROFILE_PATH,
              home / '.config/macos-setup/shell.zsh', home / '.config/macos-setup/env.zsh',
-             home / VSCODE_PATH, home / KIRO_PATH, shell_home / '.zshrc', shell_home / '.zprofile']
+             home / GIT_IGNORE_PATH, home / VSCODE_PATH, home / KIRO_PATH,
+             shell_home / '.zshrc', shell_home / '.zprofile']
     for path in paths:
         if path.is_symlink():
             raise ValueError(f'Refusing to replace symlink: {path}')
@@ -112,6 +249,7 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     migrate_profile_backups(home)
     if with_claude:
         write(claude_path, claude.encode(), preserve=True)
+    configure_git(home, git_defaults, git_ignore, current_git)
     write(codex_path, codex.encode(), preserve=True)
     write(home / PROFILE_PATH, profile.encode(), backup_dir=home / PROFILE_BACKUP_PATH)
     write(home / '.config/macos-setup/shell.zsh', shell)
@@ -170,7 +308,7 @@ def report_kiro(home):
         print('Kiro custom policy preserved, not audited by setup. Review effective permissions inside Kiro before use.')
 
 
-def verify(home, codex_home=None, claude_home=None, shell_home=None, with_claude=False):
+def verify(home, codex_home=None, claude_home=None, shell_home=None, with_claude=False, config_dir=ROOT / 'config'):
     validate(((claude_home or home / '.claude') / 'settings.json').read_text() if with_claude else '{}',
              ((codex_home or home / '.codex') / 'config.toml').read_text(),
              (home / PROFILE_PATH).read_text())
@@ -182,6 +320,8 @@ def verify(home, codex_home=None, claude_home=None, shell_home=None, with_claude
         raise ValueError('Missing environment or VS Code configuration')
     if any(path.is_symlink() for path in (home / '.kiro', home / '.kiro/settings', home / KIRO_PATH)):
         raise ValueError('Kiro permission file must not be a symlink')
+    verify_git(home, validate_git_defaults((config_dir / 'git-defaults.json').read_text()),
+               validate_git_ignore((config_dir / 'gitignore-global').read_bytes()))
     report_kiro(home)
     for name in ('.zshrc', '.zprofile'):
         line = ENV_SOURCE_LINE if name == '.zprofile' else SOURCE_LINE
@@ -208,7 +348,7 @@ def main():
                 raise ValueError(f'{variable} must be an absolute path')
             directories[key] = directory
     if args.verify:
-        verify(Path.home(), **directories)
+        verify(Path.home(), config_dir=args.config_dir, **directories)
     else:
         configure(Path.home(), args.config_dir, **directories)
 

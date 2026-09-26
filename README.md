@@ -55,6 +55,8 @@ cd macOS-devenv
 
 Zsh 使用系统自带版本，不更改登录 shell。健康的 Oh My Zsh 普通重跑不会下载或更新；已有主题、插件和个人配置保留，受管配置变化前先备份。只有 `--update` 才对干净的官方 Oh My Zsh checkout 做快进更新；自定义或不完整目录不会被覆盖。
 
+Go 安装后会解析并导出有效的 `GOPATH`，同时按 Go 官方 macOS 安装说明将显式/持久化的 `GOBIN` 或每个 `GOPATH/bin` 追加到登录与交互 Zsh 的 PATH；已有覆盖优先，不设置 `GOROOT`。Git 会补齐缺失的通用 alias、delta/VS Code、pull/push、rerere 和 global ignore 默认值。已有 Git 身份、凭据、签名、URL rewrite、include、自定义 alias 和自定义 ignore 文件不会被复制或覆盖；首次写入前会把现有 `~/.gitconfig` 备份为 0600 文件。安装结束会提示检查并自行设置 `user.name` / `user.email`。
+
 Kiro CLI 默认沿用官方应用/CLI 的更新器。桌面 DMG 从官方滚动入口或最新稳定版元数据获取；普通重跑复用校验通过的下载，`--update` 获取新包。未知或损坏的外部安装不会被静默覆盖。0.1.41 增加了强制中断恢复测试：CLI 半成品、桌面应用替换及会话锁会在重跑时重新核查；安装子进程仍运行时会拒绝并发重跑。网络、磁盘或权限问题仍需先排除，不能保证任意断电或外部改动都能自动恢复。
 
 更新本仓库：

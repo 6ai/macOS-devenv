@@ -21,7 +21,7 @@ AI 官方安装入口补充核对：2026-09-25；其他桌面应用、Oh My Zsh�
 | VS Code | Homebrew `visual-studio-code` cask | [官网](https://code.visualstudio.com/)、[cask](https://formulae.brew.sh/cask/visual-studio-code) |
 | Google Chrome | 默认 Google 官方 Universal DMG；托管模式使用官方 cask | [官网](https://www.google.com/chrome/)、[Cask 下载地址与安装步骤](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/g/google-chrome.rb)、[官方 PKG 说明](https://support.google.com/chrome/a/answer/9020580?hl=zh-Hans) |
 | 搜狗输入法（可选扩展、手动完成） | `--with-sogou` 下载官方 ZIP 到 Downloads；Homebrew `sogouinput` 提供 URL/校验和，安装器标记为 manual | [官网与下载入口](https://pinyin.sogou.com/mac/)、[官方更新日志](https://pinyin.sogou.com/mac/update_log.php)、[Cask 地址和 SHA-256](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/s/sogouinput.rb) |
-| Go | Homebrew 无版本后缀的 `go` formula | [Go 发布](https://go.dev/dl/)、[formula](https://formulae.brew.sh/formula/go) |
+| Go | Homebrew 无版本后缀的 `go` formula；Zsh 追加有效的 `GOBIN` 或 `GOPATH/bin` | [Go macOS 安装与 PATH](https://go.dev/doc/install)、[Go 发布](https://go.dev/dl/)、[formula](https://formulae.brew.sh/formula/go) |
 | 其余命令行工具 | [`formulae.txt`](../config/formulae.txt) 中的 Homebrew 官方 formula | `https://formulae.brew.sh/formula/<token>`；页面给出上游官网、源码仓库、版本和 bottle 支持 |
 
 0.1.40 默认采用 [安装方式汇总](installation.md) 中的分工：桌面先检查已有应用，缺失时下载官方 DMG；iTerm2/VS Code 使用 cask；AI CLI 优先官方脚本。`--managed-desktop` 保留自动放置桌面应用与 Kiro hook 配置。

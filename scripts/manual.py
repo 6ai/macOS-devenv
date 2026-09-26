@@ -81,6 +81,10 @@ def instructions(run_dir, config_dir, home=None, root=ROOT):
     if complete:
         lines += ['', '[MANUAL] 首次使用与登录（已完成的项目可跳过）：',
                   '• 新开一个 iTerm2 窗口，让 PATH 和 shell 配置生效。按需在 Profiles 中选择 Clean Setup。',
+                  '• Go：运行 go env GOPATH GOBIN；安装器已导出有效 GOPATH，并把 GOBIN 或各 GOPATH/bin 加入 PATH。',
+                  '• Git：通用 alias、delta/VS Code、push/pull 默认值和 global ignore 已配置；身份与凭据不会从别的机器复制。',
+                  '  先运行 git config --global --get user.name 和 git config --global --get user.email 检查身份。',
+                  '  如果为空，请用你自己的值执行 git config --global user.name "Your Name" 及 git config --global user.email "you@example.com"。',
                   '• Codex CLI：在新终端运行 codex，按提示完成登录。']
         if claude:
             lines += ['• Claude Code CLI：在新终端运行 claude，按提示完成登录。']

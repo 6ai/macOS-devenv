@@ -33,6 +33,13 @@ class ConfigurationTests(unittest.TestCase):
         return {str(p.relative_to(self.home)): p.read_bytes()
                 for p in self.home.rglob('*') if p.is_file()}
 
+    def git_config(self, *args, check=True):
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith('GIT_CONFIG_') and key != 'XDG_CONFIG_HOME'}
+        env.update(HOME=str(self.home), XDG_CONFIG_HOME=str(self.home / '.config'), GIT_CONFIG_NOSYSTEM='1')
+        return subprocess.run(['git', 'config', '--global', *args], env=env, text=True,
+                              capture_output=True, check=check)
+
     def test_claude_configuration_is_opt_in_and_unselected_private_files_are_untouched(self):
         with contextlib.redirect_stdout(io.StringIO()):
             configure.configure(self.home, ROOT / 'config')
@@ -84,6 +91,50 @@ class ConfigurationTests(unittest.TestCase):
         for path in ('.claude/settings.json', '.codex/config.toml', '.kiro/settings/permissions.yaml'):
             self.assertEqual((self.home / path).stat().st_mode & 0o777, 0o600)
         self.assertFalse((self.home / '.codex/auth.json').exists())
+
+    def test_git_defaults_global_ignore_repair_and_privacy_boundary(self):
+        defaults = configure.validate_git_defaults((ROOT / 'config/git-defaults.json').read_text())
+        self.assertFalse({key.split('.', 1)[0].lower() for key in defaults} & configure.GIT_PRIVATE_SECTIONS)
+        self.apply()
+        values = configure.git_values(self.home)
+        self.assertTrue(all(key.lower() in values for key in defaults))
+        self.assertFalse({'user.name', 'user.email', 'credential.helper'} & values.keys())
+        ignore = self.home / configure.GIT_IGNORE_PATH
+        self.assertEqual(ignore.read_bytes(), (ROOT / 'config/gitignore-global').read_bytes())
+        self.assertEqual(self.git_config('--path', '--get', 'core.excludesFile').stdout.strip(), str(ignore))
+        self.git_config('--unset-all', 'alias.st')
+        with self.assertRaisesRegex(ValueError, 'alias.st'):
+            configure.verify(self.home, with_claude=True)
+        self.apply()
+        configure.verify(self.home, with_claude=True)
+        self.assertEqual(self.git_config('--get', 'alias.st').stdout.strip(), defaults['alias.st'])
+
+    def test_git_existing_identity_credentials_alias_and_ignore_are_preserved(self):
+        personal_ignore = self.home / '.gitignore-private'
+        personal_ignore.write_text('private.cache\n')
+        personal = ('[user]\n\tname = Private User\n\temail = private@example.invalid\n'
+                    '[credential]\n\thelper = private-helper\n'
+                    '[url "ssh://private.invalid/"]\n\tinsteadOf = private:\n'
+                    '[alias]\n\tst = status --porcelain=v2\n'
+                    '[core]\n\texcludesFile = ~/.gitignore-private\n')
+        (self.home / '.gitconfig').write_text(personal)
+        self.apply()
+        self.assertEqual(self.git_config('--get', 'user.name').stdout.strip(), 'Private User')
+        self.assertEqual(self.git_config('--get', 'user.email').stdout.strip(), 'private@example.invalid')
+        self.assertEqual(self.git_config('--get', 'credential.helper').stdout.strip(), 'private-helper')
+        self.assertEqual(self.git_config('--get', 'url.ssh://private.invalid/.insteadof').stdout.strip(), 'private:')
+        self.assertEqual(self.git_config('--get', 'alias.st').stdout.strip(), 'status --porcelain=v2')
+        self.assertEqual(self.git_config('--path', '--get', 'core.excludesFile').stdout.strip(), str(personal_ignore))
+        self.assertEqual(personal_ignore.read_text(), 'private.cache\n')
+        self.assertFalse((self.home / configure.GIT_IGNORE_PATH).exists())
+        backups = list((self.home / '.config/macos-setup/backups').glob('gitconfig.backup-*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), personal)
+        self.assertEqual(backups[0].stat().st_mode & 0o777, 0o600)
+        before = self.snapshot()
+        self.apply()
+        configure.verify(self.home, with_claude=True)
+        self.assertEqual(self.snapshot(), before)
 
     def test_personal_configs_auth_and_shell_are_preserved(self):
         files = {'.claude/settings.json': '{"env":{"PERSONAL_SETTING":"yes"}}\n',

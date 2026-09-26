@@ -33,6 +33,8 @@ git --version
 git lfs version
 gh --version
 go version
+go env GOPATH >/dev/null
+go env GOBIN >/dev/null
 node --version
 npm --version
 python3 --version
@@ -57,12 +59,17 @@ if app_healthy Docker.app; then
   /Applications/Docker.app/Contents/Resources/cli-plugins/docker-buildx version
   zsh -lic 'command -v docker'
 fi
-python3 "$ROOT/scripts/configure.py" --verify
+python3 "$ROOT/scripts/configure.py" --verify --config-dir "$CONFIG_DIR"
 verify_editor
 zsh -n "$HOME/.config/macos-setup/env.zsh"
 zsh -n "$HOME/.config/macos-setup/shell.zsh"
 if [[ "$WITH_CLAUDE" == true ]]; then zsh -lic 'command -v claude'; fi
-zsh -lic 'command -v codex && command -v go && command -v code'
+zsh -lic 'command -v codex && command -v go && command -v code && [[ -n $GOPATH ]] || exit
+if [[ -n ${GOBIN:-} ]]; then
+  (( ${path[(Ie)$GOBIN]} )) || exit
+else
+  for setup_go in ${(s/:/)GOPATH}; do (( ${path[(Ie)$setup_go/bin]} )) || exit; done
+fi'
 python3 "$ROOT/scripts/runtime-smoke.py"
 python3 "$ROOT/scripts/inventory.py"
 echo 'Selected installation/preparation scope verified. Manual desktop installs and first launch remain separate.'

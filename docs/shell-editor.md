@@ -7,6 +7,8 @@
 | `codex-config.toml` | `${CODEX_HOME:-~/.codex}/config.toml`；工作区写入、按需确认；已有文件保留 |
 | `env.zsh` | `~/.config/macos-setup/env.zsh`；Homebrew、AI CLI、Docker、Go 工具和 VS Code 的 PATH |
 | `shell.zsh` | `~/.config/macos-setup/shell.zsh`；Oh My Zsh、历史、快捷键、常用别名 |
+| `git-defaults.json` | 只向 Git global config 补入缺失的通用行为和 alias；已有值保留 |
+| `gitignore-global` | 新环境安装到 `~/.config/macos-setup/gitignore-global`；已有 `core.excludesFile` 及文件保留 |
 | `vscode-settings.json` | `~/Library/Application Support/Code/User/settings.json`；仅新环境写入，已有 JSON/JSONC 原样保留 |
 | `iterm2-profile.json` | `~/Library/Application Support/iTerm2/DynamicProfiles/clean-setup.json` |
 
@@ -14,15 +16,15 @@
 
 ```bash
 cp -R config local-config
-# 编辑 local-config 中的七个模板
+# 编辑 local-config 中的九个模板
 ./setup.sh --config-dir ./local-config
 # 只应用配置，需要 Python 3.11+
 ./setup.sh --configure-only --config-dir ./local-config
 ```
 
-若升级前已创建外部配置目录，需要先把新增的 `config/kiro-permissions.json` 复制到该目录，保留原来六个私人模板；缺少新模板时配置步骤会明确报错。
+若升级前已创建外部配置目录，需要把 `config/git-defaults.json` 和 `config/gitignore-global` 连同其他模板同步到该目录；缺少新模板时配置步骤会明确报错。
 
-外部目录只控制七个模板，不改变包清单和执行下载地址。已有 AI 文件始终保留；需要变更现有 AI 配置时直接编辑其安装位置。旧环境迁移时，旧 shell 或 AI 配置里的个人代理设置也会保留，需要使用者主动审阅。
+外部目录只控制九个模板，不改变包清单和执行下载地址。已有 AI 文件始终保留；Git 默认值也只补缺失项。需要变更现有 AI 配置时直接编辑其安装位置。旧环境迁移时，旧 shell、Git 或 AI 配置里的个人设置仍由使用者审阅。
 
 覆盖项目管理的 env/shell/iTerm2 文件前会生成 `.backup-*` 备份；修改 `.zshrc`/`.zprofile` 时也备份原文件。写入采用同目录临时文件与原子替换，相同内容跳过，source 行不重复添加。目标文件为符号链接时退出，避免破坏其他 dotfiles 管理器。
 
@@ -34,7 +36,7 @@ cp -R config local-config
 - 缺少 Oh My Zsh 时使用[官方 unattended 安装器](https://github.com/ohmyzsh/ohmyzsh#unattended-install)，保留 `.zshrc`，不运行 `chsh`。iTerm2 和新 VS Code 终端明确使用 `/bin/zsh -l`；其他终端的默认 shell 可自行调整。
 - 新环境采用 **robbyrussell** 主题、`git` 插件；提示符简洁显示目录和 Git 状态，无需 Nerd Font。已有 Oh My Zsh 实例、显式主题（包括空主题）和插件列表保留。个人覆盖可写在 `.zshrc` 项目 source 行之后。
 - 已有完整 Oh My Zsh 默认跳过；`--update` 只更新无本地修改的官方 Git checkout。自定义 fork 或不完整目录提示使用原方式维护，避免覆盖私人主题。项目加载的 Oh My Zsh 关闭自动更新提示，由显式 `--update` 管理；已有独立加载配置沿用原设置。
-- PATH 去重，加入 `~/.local/bin`、Docker CLI、VS Code CLI。Go 工具优先使用已有 `GOBIN`，其次每个 `GOPATH/bin`，未设置时用 `~/go/bin`；不固定 `GOROOT` 或改写 Go 环境变量。
+- PATH 去重，加入 `~/.local/bin`、Docker CLI、VS Code CLI。Go 优先保留 shell 中已有的 `GOPATH` / `GOBIN`；未显式设置时读取持久化的 `go env GOPATH` / `go env GOBIN`，再以 `~/go` 兜底。有效 `GOPATH`（以及非空 `GOBIN`）会导出；按照 [Go 官方 macOS 安装说明](https://go.dev/doc/install)，`GOBIN` 或每个 `GOPATH/bin` 追加到 PATH；不设置 `GOROOT`。
 - 已有 `CODEX_HOME` / `CLAUDE_CONFIG_DIR` 被配置步骤尊重，要求绝对路径。不把 API key、代理、账号写进模板，也不导出到全局 GUI 环境。由 Finder 启动的应用不能假定自动继承终端环境变量；按应用官方设置独立配置。
 
 **暂不安装 Powerlevel10k。** 它需要另行选择字体和运行配置向导；如果之后选用，可参照[项目字体与配置说明](https://github.com/romkatv/powerlevel10k#fonts)安装 MesloLGS NF、切换 iTerm2 字体并运行 `p10k configure`。目前 Menlo + robbyrussell 已能直接使用。
@@ -55,6 +57,7 @@ cp -R config local-config
 | Git | `gsw` → `git switch`；`gswc` → `git switch --create`；`gl` → `git pull`；`gp` → `git push` |
 | Git | `glo` → `git log --oneline --decorate`；`glog` → `git log --oneline --decorate --graph`；`glg` → `git log --stat`；`gstl` → `git stash list` |
 | Git | `gstp` → `git stash pop`；`grs` → `git restore`；`grst` → `git restore --staged`；`git_undo_last` → `git reset --soft HEAD~1` |
+| Git | `gmtag` → 用 UTC 提交时间和 12 位 SHA 生成 Go pseudo-version 风格的版本文本 |
 | Go | `gdoc` → `go doc -all .`；`glist` → `go list -m -u all`；`glistj` → `go list -m -json all`；`grun` → `go run -v .` |
 | Go | `gbuild` → `go build -ldflags "-s -w" -trimpath -v .`；`gtest` → `go test -v -race -cover -covermode=atomic -count 1 ./...`；`gbench` → `go test -parallel=4 -run=none -benchtime=2s -benchmem -bench=.`；`gm` → `go mod` |
 | Go | `gmi` → `go mod init`；`gmt` → `go mod tidy`；`gmg` → `go mod graph`；`gmc` → `go clean --modcache` |
@@ -62,14 +65,17 @@ cp -R config local-config
 | Docker | `dpsa` → `docker ps -a`；`drmi` → `docker rmi`；`dkc` → `docker container`；`dkcm` → `docker compose` |
 | Docker | `dkimg` → `docker image ls`；`dklg` → `docker logs -f`；`dkls` / `dkps` → `docker ps -a`；`dkrm` → `docker rm -f` |
 | Docker | `dks` → `docker service`；`dksm` → `docker swarm`；`dkst` → `docker stack`；`dkstat` → `docker system df` |
-| Disk | `df` → `df -h` |
+| Disk | `df` → `df -h`；`ff [目录]` → 按占用量列出一层目录并使用可读单位 |
 | 目录/文件 | `mcd` / `mkcd` 目录 → `mkdir -p` 并进入；`cdf 路径` → 进入文件所在目录；`o [路径]` → `open` 当前或指定路径 |
 | 目录/文件 | `dl url [输出名]` → 跟随重定向下载，HTTP 错误返回失败；`mktgz 目录` / `mkzip 目录` → 打包 tgz/zip；`tfind 关键词` → 用 rg 在 txt/md 中做不区分大小写的字面搜索 |
 | 目录/文件 | `trim` → awk 折叠连续空白；`lsp` → 列出仓库文件；`lsmax` / `lslast` → 按大小 / 修改时间列出前 10 个文件 |
 | 查看 | `jv 文件` → jq 彩色分页查看；`jp 文件` → `jq -M .`；`jsonview` → 从参数读取 JSON；`ccat` → `bat --paging=never`；`mcat` / `readme` → `glow` |
 | 剪贴板 | `pc` → `pbcopy`；`pp` → `pbpaste`；`ppwd` / `pd` → 复制当前目录 / 目录基名；`pcat 文件…` → 复制文件内容；`l2l` → 多行转单行空格分隔 |
 | 时间 | `now` / `utcnow` → 本地 / UTC 当前时间，复制并回显 |
-| 哈希/编码 | `sha1` / `sha224` / `sha256` / `sha384` / `sha512` 文件 → `shasum -a …`；`b64e` / `b64d` → `base64` 编 / 解码 |
+| 哈希/编码 | `sha1` / `sha224` / `sha256` / `sha384` / `sha512` / `sha512224` / `sha512256` 文件 → `shasum -a …`；`b64e` / `b64d` → `base64` 编 / 解码 |
+| 媒体 | `ffmpeg2wav` / `video2wav`、`ffmpeg2pcm`、`pcm2wav` → 16 kHz 单声道 PCM/WAV；已有目标不覆盖 |
+| 图片 | `heic2jpg`、`png2jpg`、`webp2png`、`svg2png`、`transpng` → 使用系统 sips 或已安装 ImageMagick 转换 |
+| 图片/脚本 | `img_trans` / `img_pure_jpg` / `img_pure_png` → 生成空白素材；`new_bash [文件]` → 新建严格模式脚本且拒绝覆盖 |
 | Git 补充 | `dif` → `git diff --no-index`；`gmd` → 切回 legacy master 并 pull/prune（只有 main 的仓库不适用）；`git_corb 分支` → 检出远端同名新分支；`git_ignore [条目]` / `git_readme [行]` → 追加并 `git add` |
 | tmux | `t` → `tmux`；`ts` → `tmux ls`；`ta` → `tmux attach -t`；`tk` → `tmux kill-session -t`；`tn [名称]` → 新建会话；`ta0`…`ta16` → attach 对应编号会话 |
 | 杂项 | `reload` → 重读 `.zshrc`；`cls` → `clear`；`e` → `exit`；`ns` → `nslookup`；`weather` → `curl wttr.in`；`webserver` → `python3 -m http.server`；`fingerprint 密钥` → SSH 密钥 MD5/SHA256 指纹 |
@@ -91,6 +97,23 @@ gtest                      # Go race / coverage 测试
 `gd` 保留本地的 `git diff --no-index`，覆盖 Oh My Zsh 同名的 `git diff`；仓库差异用 `gdiff`。`gm` 保留本地的 `go mod`，覆盖插件同名的 Git merge；合并时使用 `git merge`。`d` 与 Oh My Zsh 的目录栈行为一致并在无 Oh My Zsh 时也可用；Docker 用 `dk` / `dc`。`gci` / `gcia` 是函数：缺少提交信息时报错返回，不执行空提交。`gpre` / `gaa` 会暂存全部修改，`gcia` 会 amend 最近提交，`git_undo_last` 会撤回最近提交并保留暂存内容，`grs` 会恢复工作区文件，`drmi` 会删除指定镜像；它们仅在你明确输入时执行。Make 别名要求项目已有相应 target。
 
 依赖私人 revive 配置的 `glint`、独立 godoc 服务、旧 Go 1.16/1.17 兼容参数及 `go get -insecure` 没有导入；依赖私人工具（kpwdgen、kocc、zb64、barkme、kgetip 等）、写死个人路径或工作环境的定义同样未导入。原来的个人定义保留在用户自己的文件中。配置更新和终端生效步骤同下方 AI 别名。
+
+### Git 全局默认值与隐私边界
+
+`git-defaults.json` 提供 `git st`、`git lg`、`git ps1`、`git rb`、`git stat`、`git sts`、`git tig` 等常用 alias，并补齐 `main` 初始分支、`pull.rebase`、自动设置 push upstream、fetch prune、rerere、delta pager 和 VS Code diff/merge。它们依赖的 Git、Git LFS、GitHub CLI、delta、tig 和 VS Code 都在声明的 formula/cask 与严格验证清单中。
+
+配置步骤先读取 Git 的 global config（包括 include），只对完全缺失的 key 执行 `git config --global --add`。已有 key 无论是否与模板相同都保留；首次确需补项时，将普通文件 `~/.gitconfig` 备份到 `~/.config/macos-setup/backups/gitconfig.backup-*` 并设为 0600。符号链接 `~/.gitconfig` 需要由原 dotfiles 管理方式自行更新，安装器不会沿链接改写。`--verify` 检查默认 key 均存在及有效 global ignore 文件，不输出配置值。
+
+项目不会复制或生成 `user.name`、`user.email`、credential helper、签名密钥、组织 URL rewrite、代理、include 或 LFS 自定义 filter。安装结束只提示检查身份；缺少时由本人填写：
+
+```bash
+git config --global --get user.name
+git config --global --get user.email
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+新环境的 global ignore 只包含 macOS/Windows 元数据、`*.log` 和 Go 覆盖率输出。`.vscode/`、`.idea/`、`.cursor/`、`.claude/`、`task.json` 与业务文件模式没有全局忽略，因为仓库可能有意提交这些内容。已有 `core.excludesFile` 和对应文件完全保留。
 
 ### Claude / Codex 常用别名
 

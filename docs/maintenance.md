@@ -29,7 +29,8 @@ Claude Desktop 和 Claude Code CLI 默认不在维护范围内。需要检查或
 | 八项 VS Code 扩展 | Marketplace 查询，排除预发布和非 arm64/通用包，列出 VS Code 引擎要求 | `--update` 调用官方 VS Code CLI；实际兼容版本由 VS Code 选择 |
 | Oh My Zsh | 官方 origin 的远端 master SHA 与本地 SHA、本地改动状态 | `--update` 仅对干净的官方 checkout 做快进更新 |
 | 本安装仓库 | 已确认的 origin/main SHA 与本地 SHA、本地改动状态 | 人工审阅后 `git pull --ff-only`，见下节 |
-| 七份配置模板 | 对比所选模板与安装位置的字节，仅报告相同/不同/缺失 | 受管模板审阅后 `--configure-only`；私人 AI/VS Code 文件继续保留 |
+| 七份直接安装的配置模板 | 对比所选模板与安装位置的字节，仅报告相同/不同/缺失 | 受管模板审阅后 `--configure-only`；私人 AI/VS Code 文件继续保留 |
+| Git defaults / global ignore | `--verify` 只检查通用 key 存在及有效 ignore 文件，不输出值；`--check-updates` 不把私人 Git 值做摘要 | `--configure-only` 只补缺失 key；已有身份、凭据、URL、alias 和自定义 ignore 保留 |
 | macOS / 固件 | 报告提醒人工检查系统软件更新 | 系统设置 → 通用 → 软件更新；留出重启窗口 |
 
 Homebrew 自身版本优先查询官方 GitHub API；接口失败时读取官方 latest release 的跳转目标，不需要提供访问令牌。两个入口均失败时仍报告 unknown，不把查询失败当作最新。

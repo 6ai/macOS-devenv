@@ -89,6 +89,8 @@ execute_mode() {{
         self.assertIn('2. Docker Desktop', guide)
         self.assertIn('安装包：' + str(chatgpt.resolve()), guide)
         self.assertIn(shlex.join(['open', str(docker.resolve())]), guide)
+        self.assertIn('go env GOPATH GOBIN', guide)
+        self.assertIn('身份与凭据不会从别的机器复制', guide)
         self.assertIn('拖入 Applications（应用程序）', guide)
         self.assertIn('弹出 Finder 侧栏中的安装磁盘', guide)
         self.assertIn('等待 Docker 引擎启动', guide)

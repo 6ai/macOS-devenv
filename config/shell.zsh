@@ -103,6 +103,7 @@ alias gstp='git stash pop'
 alias grs='git restore'
 alias grst='git restore --staged'
 alias git_undo_last='git reset --soft HEAD~1'
+alias gmtag='TZ=UTC git --no-pager show --quiet --abbrev=12 --date="format-local:%Y%m%d%H%M%S" --format="v0.0.0-%cd-%h"'
 
 # Go
 alias gdoc='go doc -all .'
@@ -150,9 +151,11 @@ alias dkstat='docker system df'
 alias df='df -h'
 
 # Multi-command shortcuts stop immediately if an earlier command fails.
-unalias gpre gps1 mkcd mcd d cdf o dl mktgz mkzip tfind jv jp jsonview pcat \
-  sha1 sha224 sha256 sha384 sha512 gci gcia git_corb git_ignore git_readme \
-  tn tad to tkss tmuxconf tds cn gcv dkclear fingerprint 2>/dev/null || true
+unalias gpre gps1 mkcd mcd d cdf o dl mktgz mkzip tfind ff jv jp jsonview pcat \
+  sha1 sha224 sha256 sha384 sha512 sha512224 sha512256 gci gcia git_corb \
+  git_ignore git_readme tn tad to tkss tmuxconf tds cn gcv dkclear fingerprint \
+  ffmpeg2wav ffmpeg2pcm video2wav pcm2wav heic2jpg png2jpg webp2png svg2png \
+  transpng img_trans img_pure_jpg img_pure_png new_bash 2>/dev/null || true
 function gpre { git status && git add --all && git diff --staged -w "$@"; }
 function gps1 {
   local branch
@@ -208,6 +211,20 @@ function tfind {
   echo "Searching for '$*'"
   rg --ignore-case --fixed-strings --glob '*.txt' --glob '*.md' -- "$*" .
 }
+function ff {
+  setopt localoptions pipefail
+  local target=${1:-.}
+  [[ -d $target ]] || { print -u2 "not a directory: $target"; return 1; }
+  command du -k -d 1 -- "$target" 2>/dev/null | command sort -n | command awk '
+    function human(k) {
+      if (k >= 1073741824) return sprintf("%.1fT", k / 1073741824)
+      if (k >= 1048576) return sprintf("%.1fG", k / 1048576)
+      if (k >= 1024) return sprintf("%.1fM", k / 1024)
+      return sprintf("%dK", k)
+    }
+    { size=$1; sub(/^[^[:space:]]+[[:space:]]+/, ""); printf "%8s  %s\n", human(size), $0 }
+  '
+}
 alias trim="awk '{\$1=\$1;print}'"
 alias lsp="find . -type f -not -path '*/\.git/*' | sed 's/^\.\///g' | sort"
 alias lsmax="find . -type f -not -path '*/\.git/*' -print0 | xargs -0r stat -f '%z %N' | sort -nr | head -10"
@@ -240,8 +257,111 @@ function sha224 { shasum -a 224 "$@"; }
 function sha256 { shasum -a 256 "$@"; }
 function sha384 { shasum -a 384 "$@"; }
 function sha512 { shasum -a 512 "$@"; }
+function sha512224 { shasum -a 512224 "$@"; }
+function sha512256 { shasum -a 512256 "$@"; }
 alias b64e='base64'
 alias b64d='base64 -d'
+
+# Media conversion helpers use tools already declared by the installer.
+function ffmpeg2wav {
+  (( $# )) || { print -u2 'usage: ffmpeg2wav <media> [...]'; return 1; }
+  local file target
+  for file in "$@"; do
+    [[ -f $file ]] || { print -u2 "not a file: $file"; return 1; }
+    target="${file:r}.wav"
+    command ffmpeg -nostdin -hide_banner -loglevel warning -n -i "$file" \
+      -acodec pcm_s16le -ac 1 -ar 16000 -f wav "$target" || return
+  done
+}
+function video2wav { ffmpeg2wav "$@"; }
+function ffmpeg2pcm {
+  (( $# )) || { print -u2 'usage: ffmpeg2pcm <media> [...]'; return 1; }
+  local file target
+  for file in "$@"; do
+    [[ -f $file ]] || { print -u2 "not a file: $file"; return 1; }
+    target="${file:r}.pcm"
+    command ffmpeg -nostdin -hide_banner -loglevel warning -n -i "$file" \
+      -acodec pcm_s16le -ac 1 -ar 16000 -f s16le "$target" || return
+  done
+}
+function pcm2wav {
+  (( $# )) || { print -u2 'usage: pcm2wav <16-bit-16k-mono-pcm> [...]'; return 1; }
+  local file target
+  for file in "$@"; do
+    [[ -f $file ]] || { print -u2 "not a file: $file"; return 1; }
+    target="${file:r}.wav"
+    command ffmpeg -nostdin -hide_banner -loglevel warning -n -f s16le -ar 16000 -ac 1 \
+      -i "$file" "$target" || return
+  done
+}
+function heic2jpg {
+  (( $# )) || { print -u2 'usage: heic2jpg <image.heic> [...]'; return 1; }
+  local file
+  for file in "$@"; do
+    [[ -f $file && ${file:e:l} == heic ]] || { print -u2 "not a HEIC file: $file"; return 1; }
+    command sips -s format jpeg "$file" --out "${file:r}.jpg" >/dev/null || return
+  done
+}
+function png2jpg {
+  (( $# )) || { print -u2 'usage: png2jpg <image.png> [...]'; return 1; }
+  local file
+  for file in "$@"; do
+    [[ -f $file && ${file:e:l} == png ]] || { print -u2 "not a PNG file: $file"; return 1; }
+    command magick "$file" -background white -alpha remove -alpha off -quality 96 "${file:r}.jpg" || return
+  done
+}
+function webp2png {
+  (( $# )) || { print -u2 'usage: webp2png <image.webp> [...]'; return 1; }
+  local file
+  for file in "$@"; do
+    [[ -f $file && ${file:e:l} == webp ]] || { print -u2 "not a WebP file: $file"; return 1; }
+    command magick "$file" "${file:r}.png" || return
+  done
+}
+function svg2png {
+  (( $# )) || { print -u2 'usage: svg2png <image.svg> [...]'; return 1; }
+  local file
+  for file in "$@"; do
+    [[ -f $file && ${file:e:l} == svg ]] || { print -u2 "not an SVG file: $file"; return 1; }
+    command magick -background none "$file" "${file:r}.png" || return
+  done
+}
+function transpng {
+  (( $# )) || { print -u2 'usage: transpng <image> [...]'; return 1; }
+  local file
+  for file in "$@"; do
+    [[ -f $file ]] || { print -u2 "not a file: $file"; return 1; }
+    command magick "$file" -fuzz 10% -transparent white "${file:r}-trans.png" || return
+  done
+}
+function img_trans {
+  local size=${1:-500}
+  [[ $size == <1-> ]] || { print -u2 'usage: img_trans [positive-size]'; return 1; }
+  command magick -size "${size}x${size}" xc:transparent "PNG32:trans-${size}.png"
+}
+function img_pure_jpg {
+  local size=${1:-500} color=${2:-white}
+  [[ $size == <1-> ]] || { print -u2 'usage: img_pure_jpg [positive-size] [color]'; return 1; }
+  command magick -size "${size}x${size}" "xc:${color}" -quality 100 "pure-${size}.jpg"
+}
+function img_pure_png {
+  local size=${1:-500} color=${2:-white}
+  [[ $size == <1-> ]] || { print -u2 'usage: img_pure_png [positive-size] [color]'; return 1; }
+  command magick -size "${size}x${size}" "xc:${color}" "PNG32:pure-${size}.png"
+}
+
+function new_bash {
+  local target=${1:-test.sh}
+  [[ ! -e $target ]] || { print -u2 "refusing to overwrite: $target"; return 1; }
+  cat >"$target" <<'SETUP_BASH_TEMPLATE'
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+cd "$SCRIPT_DIR"
+SETUP_BASH_TEMPLATE
+  chmod u+x "$target"
+}
 
 # Git helpers with validation; these replace the plain gci/gcia aliases.
 unalias gci gcia 2>/dev/null || true
