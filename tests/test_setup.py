@@ -802,6 +802,9 @@ prepare_sogou_installer() { echo SOGOU-PREPARED; }
 execute_mode
 echo "TOTAL $COMPLETED_STEPS $STEP_TOTAL"
 """
+        default_count = (9 + len((ROOT / 'config/formulae.txt').read_text().split())
+                         + len((ROOT / 'config/casks.tsv').read_text().splitlines())
+                         + len((ROOT / 'config/vscode-extensions.txt').read_text().split()) - 2)
         for enabled in ('false', 'true'):
             for claude in ('false', 'true'):
                 result = self.run_shell(f'WITH_SOGOU={enabled}; WITH_CLAUDE={claude}; ' + script)
@@ -811,7 +814,7 @@ echo "TOTAL $COMPLETED_STEPS $STEP_TOTAL"
                 self.assertEqual('app:claude-desktop' in result.stdout, claude == 'true')
                 if claude == 'true':
                     self.assertLess(result.stdout.index('CONFIGURED'), result.stdout.index('AGENT claude'))
-                count = 52 + 2 * (claude == 'true') + (enabled == 'true')
+                count = default_count + 2 * (claude == 'true') + (enabled == 'true')
                 self.assertIn(f'TOTAL {count} {count}', result.stdout)
                 if enabled == 'true':
                     self.assertGreater(result.stdout.index('SOGOU-PREPARED'), result.stdout.index('VERIFIED'))
@@ -921,7 +924,7 @@ ensure_cask kiro Kiro.app
             self.assertNotEqual(result.returncode, 0)
 
     def test_manifest_and_all_formula_probes(self):
-        expected = {'git', 'git-lfs', 'gh', 'go', 'node', 'python', 'uv', 'ripgrep', 'fd', 'bat',
+        expected = {'git', 'git-lfs', 'gh', 'go', 'node', 'python', 'uv', 'ripgrep', 'duf', 'fd', 'bat',
                     'fzf', 'autojump', 'zoxide', 'jq', 'yq', 'tmux', 'tree', 'git-delta', 'tig', 'wget',
                     'htop', 'shellcheck', 'shfmt', 'ffmpeg', 'imagemagick',
                     'charmbracelet/tap/glow', 'charmbracelet/tap/pop', 'charmbracelet/tap/gum', 'charmbracelet/tap/crush'}

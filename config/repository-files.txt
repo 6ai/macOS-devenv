@@ -38,6 +38,7 @@ scripts/docker-smoke.sh
 scripts/editor.sh
 scripts/inventory.py
 scripts/kiro-shell.py
+scripts/manual.py
 scripts/official_ai.py
 scripts/plain-log.awk
 scripts/prepare-sogou.py

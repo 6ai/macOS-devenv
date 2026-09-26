@@ -54,14 +54,49 @@ class SessionTests(unittest.TestCase):
         self.assertIn('Result: success', next(self.logs.glob('*/run.log')).read_text())
 
     def test_prepared_desktops_are_reported_as_manual_work(self):
-        result = self.run_session('DESKTOP_MODE=download; MANUAL_STEPS=" chatgpt docker-desktop"; '
-                                  'execute_mode() { STEP_TOTAL=1; step_run demo echo prepared; }')
+        home = self.root / 'home'
+        downloads = home / 'Downloads/macos-setup'
+        downloads.mkdir(parents=True)
+        chatgpt = downloads / 'chatgpt-1.2.3.dmg'
+        docker = downloads / 'docker-desktop-latest.dmg'
+        stale = downloads / 'google-chrome-old.dmg'
+        unselected = downloads / 'claude-desktop-latest.dmg'
+        chatgpt.write_bytes(b'chatgpt dmg')
+        docker.write_bytes(b'docker dmg')
+        stale.write_bytes(b'old download from another run')
+        unselected.write_bytes(b'unselected claude dmg')
+        receipts = json.dumps([
+            {'component': 'chatgpt', 'filename': chatgpt.name},
+            {'component': 'docker-desktop', 'filename': docker.name},
+            {'component': 'claude-desktop', 'filename': unselected.name},
+        ])
+        body = f'''DESKTOP_MODE=download; MANUAL_STEPS=" chatgpt docker-desktop";
+execute_mode() {{
+  STEP_TOTAL=1
+  printf '%s\\n' {shlex.quote(receipts)} >"$RUN_DIR/desktop-installers.json"
+  step_run demo echo prepared
+}}'''
+        result = self.run_session(body, dict(os.environ, HOME=str(home)))
         self.assertEqual(result.returncode, 0, result.stderr)
         report = self.reports()[0]
         self.assertEqual(report['desktop_mode'], 'download')
         self.assertEqual(report['manual_steps'], ['chatgpt', 'docker-desktop'])
         self.assertIn('[MANUAL]', result.stdout)
-        self.assertIn('still need your action', result.stdout)
+        self.assertIn('仍需你手动完成安装', result.stdout)
+        guide = next(self.logs.glob('*/manual-steps.txt')).read_text()
+        self.assertIn('下载完成不代表应用已安装', guide)
+        self.assertIn('1. ChatGPT / Codex 桌面端', guide)
+        self.assertIn('2. Docker Desktop', guide)
+        self.assertIn('安装包：' + str(chatgpt.resolve()), guide)
+        self.assertIn(shlex.join(['open', str(docker.resolve())]), guide)
+        self.assertIn('拖入 Applications（应用程序）', guide)
+        self.assertIn('弹出 Finder 侧栏中的安装磁盘', guide)
+        self.assertIn('等待 Docker 引擎启动', guide)
+        self.assertIn('--verify', guide)
+        self.assertNotIn('无法定位安装包', guide)
+        self.assertNotIn(str(stale.resolve()), guide)
+        self.assertNotIn(str(unselected.resolve()), guide)
+        self.assertNotIn('Claude Desktop', guide)
 
     def test_app_display_does_not_imply_homebrew_and_keeps_machine_ids(self):
         result = self.run_session('execute_mode() { step_run cask:claude-desktop true; }')

@@ -22,7 +22,7 @@ Run Bash 3.2-compatible `./setup.sh`. Source checkout: `https://github.com/6ai/m
 
 Default downloadable desktops are Docker Desktop, Chrome, ChatGPT and Kiro IDE. Claude Desktop and Claude Code CLI are excluded unless --with-claude is explicitly supplied; --managed-desktop alone does not select them. Unselected Claude software/configuration is not downloaded, installed, read, repaired, updated or required for verification. Pass the flag again for reruns, --verify, --configure-only and --check-updates. First inspect actual installed bundles; healthy copies are preserved. Missing apps get official DMGs in ~/Downloads/macos-setup and a final manual-install reminder. iTerm2/VS Code remain qualified official casks. Default Kiro CLI invokes its official installer and leaves onboarding/integration to the vendor. See installation.md for the per-app policy.
 
-The default run has 52 stages; --with-claude adds two stages; --with-sogou adds one preparation stage. Prepared packages are not installed apps. result.json includes desktop_mode, with_claude and manual_steps. During default install only, verification may accept a freshly validated prepared DMG for an absent desktop; inventory records null plus pending_applications. Standalone --verify remains strict and fails for absent apps. --managed-desktop --verify additionally validates managed Kiro hooks. The optional Sogou ZIP always remains a manual installation in either policy.
+The default run has 53 stages; --with-claude adds two stages; --with-sogou adds one preparation stage. Prepared packages are not installed apps. result.json includes desktop_mode, with_claude and manual_steps. During default install only, verification may accept a freshly validated prepared DMG for an absent desktop; inventory records null plus pending_applications. Standalone --verify remains strict and fails for absent apps. --managed-desktop --verify additionally validates managed Kiro hooks. The optional Sogou ZIP always remains a manual installation in either policy.
 
 ## Desktop, editor and shell contracts
 
@@ -113,6 +113,7 @@ The session keeps umask 077 for private logs and project configuration. Since 0.
 | `downloads.tsv` | Installer component and SHA-256 of successfully downloaded installer bytes |
 | `sogou-installer.json` | Only with --with-sogou; absent when not requested. Version 1: prepared status, downloaded/reused action, manual_install_required=true, version, vendor source URL, SHA-256 and filename (no home path) |
 | `desktop-installers.json` | Prepared desktop packages; manual_install_required=true; not proof of app installation |
+| `manual-steps.txt` | Human-readable end-of-run guide derived only from this session's manual_steps and installer receipts; exact package paths, DMG/first-launch actions and follow-up verification command |
 | `inventory.json` | Successful selected-scope verification: script version/revision, declared formula installed versions, application bundle versions, AI/Docker/Go versions, declared vscode_extensions versions, ohmyzsh_revision |
 | `updates.json` / `updates.md` | Maintenance checks only; complete or partial version/configuration report, statuses and suggested actions; see `docs/updates.schema.json` |
 

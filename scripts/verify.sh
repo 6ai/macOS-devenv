@@ -25,7 +25,7 @@ while IFS=$'\t' read -r -u 3 package app; do
   /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$(app_path "$app")/Contents/Info.plist"
 done 3<"$ROOT/config/casks.tsv"
 
-for executable in git git-lfs gh go node npm python3 uv rg fd bat fzf autojump zoxide jq yq tmux tree delta tig wget htop shellcheck shfmt ffmpeg magick glow pop gum crush claude codex; do
+for executable in git git-lfs gh go node npm python3 uv rg duf fd bat fzf autojump zoxide jq yq tmux tree delta tig wget htop shellcheck shfmt ffmpeg magick glow pop gum crush claude codex; do
   if [[ "$executable" == claude && "$WITH_CLAUDE" != true ]]; then continue; fi
   command -v "$executable"
 done

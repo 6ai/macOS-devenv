@@ -25,9 +25,9 @@ cd macOS-devenv
 | Codex CLI | 官方安装脚本 | 首次登录 |
 | Claude Desktop、Claude Code CLI | 默认关闭；添加 `--with-claude` 才启用 | 桌面端下载 DMG 后手动安装，CLI 使用官方脚本 |
 | Kiro CLI | 官方安装脚本，保留官方启动和集成流程 | 在 Kiro 中完成 onboarding / 终端授权 |
-| Git、Go、Node、Python、uv 等开发工具 | Homebrew formula 自动安装 | 通常无需额外操作 |
+| Git、Go、Node、Python、uv、ripgrep（`rg`）、duf 等开发工具 | Homebrew formula 自动安装 | 通常无需额外操作 |
 
-已有健康软件默认保留。桌面阶段显示为 `app:*`；启用后的 Claude 桌面端优先使用官网最新 DMG 入口。DMG 下载完成会标为 `prepared`，末尾列出 `[MANUAL]` 待办；这表示安装包已准备好，**不表示桌面应用已安装**。完成待办后运行 `./setup.sh --verify`。
+已有健康软件默认保留。桌面阶段显示为 `app:*`；启用后的 Claude 桌面端优先使用官网最新 DMG 入口。DMG 下载完成会标为 `prepared`，这表示安装包已准备好，**不表示桌面应用已安装**。运行末尾的 `[MANUAL]` 会逐项给出本轮安装包的完整路径、可复制的 `open` 命令、拖入“应用程序”与弹出镜像的步骤，以及登录、权限和首次启动事项；同一份说明保存在本次日志目录的 `manual-steps.txt`。全部完成后，执行末尾给出的严格验证命令。
 
 需要自动放置桌面应用、配置 Kiro Zsh 集成时，显式选择托管模式：
 

@@ -174,12 +174,13 @@ finish_session() {
     ui_print error "[FAILED] $(step_display "$CURRENT_STEP"), exit $code. Correct the cause and rerun the same command."
   fi
   printf '\n'
-  if [[ "$code" == 0 ]]; then
-    if [[ -n "${MANUAL_STEPS:-}" ]]; then
-      HAS_WARNINGS=true
-      ui_print warn "[MANUAL] Prepared installers / onboarding still need your action:$MANUAL_STEPS"
-      ui_print info '[INFO] Open ~/Downloads/macos-setup, follow the vendor installers, then run ./setup.sh --verify.'
+  if [[ "$MODE" == install && ("$code" == 0 || -n "${MANUAL_STEPS:-}") ]]; then
+    if ! python3 "$ROOT/scripts/manual.py" --run-dir "$RUN_DIR" --config-dir "$CONFIG_DIR"; then
+      warn 'Unable to write detailed manual instructions. See docs/installation.md and the installer paths above.'
     fi
+    if [[ -n "${MANUAL_STEPS:-}" ]]; then HAS_WARNINGS=true; fi
+  fi
+  if [[ "$code" == 0 ]]; then
     if [[ "$HAS_WARNINGS" == true ]]; then
       ui_print warn "[DONE] Result: $status (with setup warnings). Completed: $COMPLETED_STEPS/$STEP_TOTAL. Logs: $RUN_DIR"
     else

@@ -500,6 +500,7 @@ verify_installation() {
 }
 prepare_sogou_installer() {
   python3 "$ROOT/scripts/prepare-sogou.py"
+  MANUAL_STEPS="$MANUAL_STEPS sogou-installer"
   STEP_ACTION=prepared
 }
 
@@ -543,10 +544,6 @@ execute_mode() {
       if [[ "$WITH_CLAUDE" == true ]]; then step_run claude check_agent claude; fi
       step_run codex check_agent codex
       step_run verification verify_installation
-      echo 'Open iTerm2 with Clean Setup. Run codex to sign in.'
-      if [[ "$WITH_CLAUDE" == true ]]; then echo 'Run claude to sign in to Claude Code.'; fi
-      echo 'Open Kiro.app for the IDE. Run kiro-cli launch for terminal integration onboarding, then reopen iTerm2.'
-      echo 'Complete first launch in Docker.app, then run ./setup.sh --docker-smoke.'
       if [[ "$WITH_SOGOU" == true ]]; then step_run sogou-installer prepare_sogou_installer; fi
       ;;
   esac

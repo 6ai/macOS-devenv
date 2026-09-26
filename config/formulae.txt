@@ -6,6 +6,7 @@ node
 python
 uv
 ripgrep
+duf
 fd
 bat
 fzf
