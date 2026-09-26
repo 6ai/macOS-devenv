@@ -58,11 +58,18 @@ def inventory():
     declared = (ROOT / 'config/vscode-extensions.txt').read_text().split()
     available = dict(line.lower().rsplit('@', 1) for line in extension_lines if '@' in line)
     extensions = {name: available[name] for name in declared}
+    font_casks = [line.split('\t', 1)[0] for line in (ROOT / 'config/font-casks.tsv').read_text().splitlines()]
     omz = output('/bin/bash', '-c', 'source "$1"; omz_path', 'inventory', str(ROOT / 'setup.sh'))
     try:
         omz_revision = output('git', '-C', omz, 'rev-parse', 'HEAD')
     except subprocess.CalledProcessError:
         omz_revision = 'unmanaged'
+    p10k = output('/bin/bash', '-c', 'source "$1"; powerlevel10k_path',
+                  'inventory', str(ROOT / 'setup.sh'))
+    try:
+        p10k_revision = output('git', '-C', p10k, 'rev-parse', 'HEAD')
+    except subprocess.CalledProcessError:
+        p10k_revision = 'unmanaged'
     try:
         revision = output('git', '-C', str(ROOT), 'rev-parse', 'HEAD')
     except subprocess.CalledProcessError:
@@ -70,7 +77,9 @@ def inventory():
     return {'schema_version': 1, 'script_version': (ROOT / 'VERSION').read_text().strip(),
             'revision': revision, 'formulae': formulae, 'applications': apps, 'tools': tools,
             'pending_applications': pending, 'with_claude': with_claude,
+            'font_casks': font_casks,
             'vscode_extensions': extensions, 'ohmyzsh_revision': omz_revision,
+            'powerlevel10k_revision': p10k_revision,
             'kiro_permission_template': kiro_policy_status(Path.home())}
 
 

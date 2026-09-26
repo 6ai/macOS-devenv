@@ -18,6 +18,7 @@ tmux
 tree
 git-delta
 tig
+lazygit
 wget
 htop
 shellcheck

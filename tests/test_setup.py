@@ -78,7 +78,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
     def test_complete_template_contract(self):
-        actual = {p.name: p.read_text() for p in sorted((ROOT / 'config').iterdir()) if p.name != '.DS_Store'}
+        actual = {str(p.relative_to(ROOT / 'config')): p.read_text()
+                  for p in sorted((ROOT / 'config').rglob('*'))
+                  if p.is_file() and p.name != '.DS_Store'}
         expected = json.loads((ROOT / 'tests/fixtures/config-golden.json').read_text())
         self.assertEqual(actual, expected)
 
@@ -162,6 +164,32 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertEqual((self.home / '.vimrc').read_text().splitlines().count(configure.VIM_SOURCE_LINE), 1)
 
+    def test_legacy_shell_loaders_update_in_place_without_touching_surrounding_content(self):
+        zshrc = self.home / '.zshrc'
+        zprofile = self.home / '.zprofile'
+        zshrc.write_text('export BEFORE=yes\nsource ~/.config/macos-setup/shell.zsh\nexport AFTER=yes\n')
+        zprofile.write_text('# profile before\n' + configure.SOURCE_LINE + '\n# profile after\n')
+        before_zshrc, before_zprofile = zshrc.read_text(), zprofile.read_text()
+        self.apply()
+        self.assertEqual(zshrc.read_text(),
+                         'export BEFORE=yes\n' + configure.SOURCE_LINE + '\nexport AFTER=yes\n')
+        self.assertEqual(zprofile.read_text(),
+                         '# profile before\n' + configure.ENV_SOURCE_LINE + '\n# profile after\n')
+        self.assertEqual(next(self.home.glob('.zshrc.backup-*')).read_text(), before_zshrc)
+        self.assertEqual(next(self.home.glob('.zprofile.backup-*')).read_text(), before_zprofile)
+        snapshot = self.snapshot()
+        self.apply()
+        self.assertEqual(self.snapshot(), snapshot)
+
+    def test_duplicate_recognized_shell_loaders_collapse_but_similar_personal_lines_remain(self):
+        personal = 'echo "$HOME/.config/macos-setup/shell.zsh"\n'
+        (self.home / '.zshrc').write_text(configure.SOURCE_LINE + '\n' + personal
+                                          + '. "$HOME/.config/macos-setup/shell.zsh"\n')
+        self.apply()
+        rows = (self.home / '.zshrc').read_text().splitlines()
+        self.assertEqual(rows.count(configure.SOURCE_LINE), 1)
+        self.assertIn(personal.strip(), rows)
+
     def test_vim_template_loads_core_defaults(self):
         executable = shutil.which('vim')
         if not executable:
@@ -229,9 +257,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_invalid_external_config_does_not_write(self):
         external = self.home / 'external'
-        external.mkdir()
-        for path in (ROOT / 'config').iterdir():
-            (external / path.name).write_bytes(path.read_bytes())
+        shutil.copytree(ROOT / 'config', external)
         for name, invalid in [('claude-settings.json', '[]'),
                               ('codex-config.toml', 'bad = ['),
                               ('kiro-permissions.json', '{}'), ('iterm2-profile.json', '{}'), ('vscode-settings.json', '[]')]:
@@ -247,9 +273,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_external_templates_and_existing_invalid_config(self):
         external = self.home / 'external'
-        external.mkdir()
-        for path in (ROOT / 'config').iterdir():
-            (external / path.name).write_bytes(path.read_bytes())
+        shutil.copytree(ROOT / 'config', external)
         (external / 'codex-config.toml').write_text('model_reasoning_effort = "high"\n')
         self.apply(external)
         self.assertEqual((self.home / '.codex/config.toml').read_text(), 'model_reasoning_effort = "high"\n')
@@ -303,12 +327,36 @@ class ConfigurationTests(unittest.TestCase):
         backups = list(path.parent.glob('shell.zsh.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), '# old managed content\n')
+        module = self.home / '.config/macos-setup/zsh/development.zsh'
+        module.write_text('# old managed module\n')
+        self.apply()
+        backups = list(module.parent.glob('development.zsh.backup-*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_text(), '# old managed module\n')
+        self.assertEqual(module.read_bytes(), (ROOT / 'config/zsh/development.zsh').read_bytes())
         vim = self.home / '.config/macos-setup/vimrc'
         vim.write_text('" old managed vim content\n')
         self.apply()
         backups = list(vim.parent.glob('vimrc.backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), '" old managed vim content\n')
+
+    def test_managed_zsh_modules_are_required_and_symlinks_are_rejected(self):
+        self.apply()
+        module = self.home / '.config/macos-setup/zsh/tools.zsh'
+        content = module.read_bytes()
+        module.unlink()
+        with self.assertRaisesRegex(ValueError, 'zsh/tools.zsh'):
+            configure.verify(self.home, with_claude=True)
+        module.write_bytes(content)
+        target = self.home / 'personal-tools.zsh'
+        target.write_bytes(content)
+        module.unlink()
+        module.symlink_to(target)
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, 'symlink'):
+            self.apply()
+        self.assertEqual(self.snapshot(), before)
 
     def test_iterm_updates_keep_backups_and_temporary_files_outside_watched_folder(self):
         self.apply()
@@ -367,7 +415,8 @@ class ConfigurationTests(unittest.TestCase):
     def test_entire_keyboard_contract_in_real_zsh(self):
         shell = ROOT / 'config/shell.zsh'
         # Each declared binding must be active in a real interactive Zsh.
-        commands = [line for line in shell.read_text().splitlines() if line.startswith("bindkey '")]
+        commands = [line for line in (ROOT / 'config/zsh/options.zsh').read_text().splitlines()
+                    if line.startswith("bindkey '")]
         self.assertEqual(len(commands), 13)
         for command in commands:
             sequence, widget = command[len('bindkey '):].rsplit(' ', 1)
@@ -406,6 +455,7 @@ class InstallerTests(unittest.TestCase):
 WITH_CLAUDE=true
 ensure_formula() { cat >/dev/null; echo "CHECK formula:$1"; }
 ensure_cask() { cat >/dev/null; echo "CHECK cask:$1"; }
+ensure_font_cask() { cat >/dev/null; echo "CHECK font:$1"; }
 git() { :; }
 ensure_git_lfs_filters() { :; }
 install_packages
@@ -413,6 +463,7 @@ install_packages
         self.assertEqual(result.returncode, 0, result.stderr)
         expected = ['CHECK formula:' + name for name in (ROOT / 'config/formulae.txt').read_text().split()]
         expected += ['CHECK cask:' + line.split('\t')[0] for line in (ROOT / 'config/casks.tsv').read_text().splitlines()]
+        expected += ['CHECK font:' + line.split('\t')[0] for line in (ROOT / 'config/font-casks.tsv').read_text().splitlines()]
         self.assertEqual([line for line in result.stdout.splitlines() if line.startswith('CHECK ')], expected)
 
     def test_formula_skip_install_update_and_repair(self):
@@ -449,6 +500,31 @@ ensure_cask example Never-Existing-Setup-Test-Example.app
                     self.assertIn(f'MUTATE {operation} --cask homebrew/cask/example', result.stdout)
                 else:
                     self.assertNotIn('MUTATE', result.stdout)
+
+    def test_font_cask_skip_update_repair_and_preserve(self):
+        for managed, healthy, update, operation, action in [
+            ('true', 'true', 'false', None, 'skipped'),
+            ('true', 'true', 'true', 'upgrade', 'update-checked'),
+            ('true', 'false', 'false', 'reinstall', 'repaired'),
+            ('false', 'true', 'true', None, 'preserved'),
+            ('false', 'false', 'false', 'install', 'installed'),
+        ]:
+            with self.subTest(managed=managed, healthy=healthy, operation=operation):
+                result = self.run_shell(f'MANAGED={managed}; HEALTHY={healthy}; UPDATE={update}; ' + r'''
+brew() {
+  if [[ "$1" == list ]]; then [[ "$MANAGED" == true ]];
+  else touch "$TEST_STATE/healthy"; echo "MUTATE $*"; fi
+}
+font_cask_healthy() { [[ "$HEALTHY" == true || -f "$TEST_STATE/healthy" ]]; }
+ensure_font_cask font-example ExampleNerdFont-Regular.ttf
+echo "ACTION $STEP_ACTION"
+''')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                if operation:
+                    self.assertIn(f'MUTATE {operation} --cask homebrew/cask/font-example', result.stdout)
+                else:
+                    self.assertNotIn('MUTATE', result.stdout)
+                self.assertIn('ACTION ' + action, result.stdout)
 
     def test_ai_installation_dispatch_skips_healthy_and_propagates_failure(self):
         commands = ('check_agent claude', 'check_agent codex',
@@ -890,7 +966,9 @@ network_check() { :; }
 bootstrap() { :; }
 ensure_formula() { :; }
 ensure_cask() { :; }
+ensure_font_cask() { :; }
 ensure_ohmyzsh() { :; }
+ensure_powerlevel10k() { :; }
 ensure_kiro_shell() { :; }
 ensure_extension() { :; }
 git() { :; }
@@ -902,8 +980,9 @@ prepare_sogou_installer() { echo SOGOU-PREPARED; }
 execute_mode
 echo "TOTAL $COMPLETED_STEPS $STEP_TOTAL"
 """
-        default_count = (9 + len((ROOT / 'config/formulae.txt').read_text().split())
+        default_count = (10 + len((ROOT / 'config/formulae.txt').read_text().split())
                          + len((ROOT / 'config/casks.tsv').read_text().splitlines())
+                         + len((ROOT / 'config/font-casks.tsv').read_text().splitlines())
                          + len((ROOT / 'config/vscode-extensions.txt').read_text().split()) - 2)
         for enabled in ('false', 'true'):
             for claude in ('false', 'true'):
@@ -1025,7 +1104,7 @@ ensure_cask kiro Kiro.app
 
     def test_manifest_and_all_formula_probes(self):
         expected = {'git', 'git-lfs', 'gh', 'go', 'node', 'python', 'uv', 'ripgrep', 'duf', 'fd', 'bat',
-                    'fzf', 'autojump', 'zoxide', 'jq', 'yq', 'tmux', 'tree', 'git-delta', 'tig', 'wget',
+                    'fzf', 'autojump', 'zoxide', 'jq', 'yq', 'tmux', 'tree', 'git-delta', 'tig', 'lazygit', 'wget',
                     'htop', 'shellcheck', 'shfmt', 'ffmpeg', 'imagemagick',
                     'charmbracelet/tap/glow', 'charmbracelet/tap/pop', 'charmbracelet/tap/gum', 'charmbracelet/tap/crush'}
         packages = (ROOT / 'config/formulae.txt').read_text().split()

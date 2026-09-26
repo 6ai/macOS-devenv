@@ -24,12 +24,14 @@ Claude Desktop 和 Claude Code CLI 默认不在维护范围内。需要检查或
 | --- | --- | --- |
 | Homebrew 自身 | 当前命令版本对比官方 GitHub release | `brew update`；刷新 Homebrew 和包元数据，不等于升级已安装软件 |
 | 所有声明的 formula | 本机已安装版本对比实时 Homebrew stable API，包含 `_revision`、官方动态别名与 pin；识别 tmux 字母后缀和 ImageMagick 数字补丁号 | `./setup.sh --update`；保留 pin，停用/弃用包先审阅替代项 |
+| 两项 Nerd Font cask | Homebrew 安装版本对比当前 cask，并检查声明的 regular face 文件 | `./setup.sh --update` 更新受管 cask；已有外部字体文件保留原来源 |
 | 非 AI 桌面应用 | 读取实际 app bundle 版本，对比当前 Cask；记录应用自行更新后的真实版本 | 默认 Chrome/Docker 刷新 DMG；托管模式的受管 cask 才自动升级。已有外部副本使用应用自己的更新器 |
 | ChatGPT、Claude Desktop、Kiro IDE/CLI、Claude / Codex CLI | 实际版本对比官方最新/stable 元数据；不查询 Homebrew 参考版本 | 默认桌面准备 DMG，CLI 使用官方脚本；`--managed-desktop --update` 更新记录的 app，默认 Kiro CLI 由官方应用更新 |
 | 八项 VS Code 扩展 | Marketplace 查询，排除预发布和非 arm64/通用包，列出 VS Code 引擎要求 | `--update` 调用官方 VS Code CLI；实际兼容版本由 VS Code 选择 |
 | Oh My Zsh | 官方 origin 的远端 master SHA 与本地 SHA、本地改动状态 | `--update` 仅对干净的官方 checkout 做快进更新 |
+| Powerlevel10k | 官方 origin 的远端 master SHA 与本地 SHA、本地改动状态 | `--update` 仅对干净、非符号链接的官方 checkout 做快进更新；`~/.p10k.zsh` 保留 |
 | 本安装仓库 | 已确认的 origin/main SHA 与本地 SHA、本地改动状态 | 人工审阅后 `git pull --ff-only`，见下节 |
-| 七份直接安装的配置模板 | 对比所选模板与安装位置的字节，仅报告相同/不同/缺失 | 受管模板审阅后 `--configure-only`；私人 AI/VS Code 文件继续保留 |
+| 十六份安装位置中的配置模板 | 对比所选模板与安装位置的字节，包括 `shell.zsh` 及八个 Zsh 模块；仅报告相同/不同/缺失 | 受管模板审阅后 `--configure-only`；私人 AI/VS Code 文件继续保留 |
 | Git defaults / global ignore | `--verify` 只检查通用 key 存在及有效 ignore 文件，不输出值；`--check-updates` 不把私人 Git 值做摘要 | `--configure-only` 只补缺失 key；已有身份、凭据、URL、alias 和自定义 ignore 保留 |
 | macOS / 固件 | 报告提醒人工检查系统软件更新 | 系统设置 → 通用 → 软件更新；留出重启窗口 |
 
@@ -66,7 +68,7 @@ git describe --tags --exact-match       # 正式发布提交应有 v<VERSION> ta
 
 版本检查仅通过 `ls-remote` 获取 SHA，不下载远端提交，所以只报告“有差异”，不会猜测是否能快进。分叉或未提交修改应先由维护者处理，禁止 `reset --hard`、自动覆盖或强推。ZIP 安装、自定义 fork、没有 origin 的副本标为人工维护；从公开项目仓库获取新版本，不把父目录或私人配置打包上传。
 
-阅读新版本 README 和 `docs/sources.md`，确认新增包、模板与官方权限规范。外部配置目录新增模板时，只补入缺少的文件，不用新的整个 config 目录覆盖旧私人设置。受管 env/shell/iTerm2 模板审阅后应用，原有备份保留；Claude、Codex、Kiro IDE、VS Code 的个人配置差异需要人工合并。
+阅读新版本 README 和 `docs/sources.md`，确认新增包、模板与官方权限规范。外部配置目录新增模板时，补入新文件并审阅变更；不要用新的整个 config 目录覆盖其中的私人模板。受管 env/shell/Zsh 模块/iTerm2 模板审阅后应用，原有备份保留；Claude、Codex、Kiro IDE、VS Code 的个人配置差异需要人工合并。
 
 Kiro CLI 的 Zsh hooks 和历史补全选择由其专门的安装/验收逻辑管理，不是对私人 CLI JSON 做模板覆盖。供应商改了初始化代码或权限格式时，应更新脚本、完整契约测试，再验证 CLI 实际加载；不能只改一个版本号。
 

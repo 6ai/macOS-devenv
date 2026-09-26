@@ -13,6 +13,7 @@ kiro-cli-releases	metadata	https://prod.download.cli.kiro.dev/stable/latest/mani
 claude-releases	metadata	https://downloads.claude.ai/claude-code-releases/latest
 codex-releases	metadata	https://releases.openai.com/codex/channels/latest
 ohmyzsh	installer	https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh
+powerlevel10k	git	https://github.com/romkatv/powerlevel10k.git
 sogou-download	distribution	https://ime.gtimg.com/pc/
 homebrew-api	connectivity	https://formulae.brew.sh/api/formula/go.json
 github	connectivity	https://github.com

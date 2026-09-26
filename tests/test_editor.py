@@ -38,7 +38,7 @@ class EditorTests(unittest.TestCase):
 
     def test_complete_alias_expansion_repeat_and_interactive_boundary(self):
         expected = {
-            'll': ['ls', '-lah'], 'g': ['git'],
+            'll': ['ls', '-lah'], 'g': ['git'], 'lg': ['lazygit'],
             'cl': ['claude'], 'clc': ['claude', '--continue'],
             'cld': ['claude', '--dangerously-skip-permissions'],
             'cldc': ['claude', '--dangerously-skip-permissions', '--continue'],
@@ -135,7 +135,7 @@ class EditorTests(unittest.TestCase):
         expected.update({f'ta{index}': ['tmux', 'attach', '-t', str(index)] for index in range(17)})
         # Stub every target: exercise real Zsh alias expansion without running agents or Docker.
         stubs = '\n'.join(name + '() { printf "%s\\n" ' + name + ' "$@"; }'
-                          for name in ('ls', 'git', 'claude', 'codex', 'docker', 'make', 'go', 'df',
+                          for name in ('ls', 'git', 'lazygit', 'claude', 'codex', 'docker', 'make', 'go', 'df',
                                        'tmux', 'bat', 'glow', 'pbcopy', 'pbpaste', 'base64',
                                        'nslookup', 'clear', 'curl', 'python3', 'code', 'realpath'))
         for name, command in expected.items():
@@ -318,7 +318,11 @@ chpwd_functions+=(autojump_test_hook)
 j() { printf 'autojump\n'; printf '%s\n' "$@"; }
 jc() { print vendor-child; }
 """)
-        zoxide = "zoxide() { print -r -- 'function z { printf \"zoxide\\n\"; printf \"%s\\n\" \"$@\"; }'; }\n"
+        # Match the installed zoxide contract: its interactive completion block
+        # can end with a false feature check when compdef is unavailable.
+        zoxide = ("zoxide() { print -r -- 'function z { printf \"zoxide\\n\"; "
+                  "printf \"%s\\n\" \"$@\"; }; [[ \"${+functions[compdef]}\" -ne 0 ]] "
+                  "&& compdef _zoxide_z z'; }\n")
         result = self.zsh(zoxide + """
 alias jc='print custom-child'
 source "$1"
@@ -343,10 +347,12 @@ eval jc
         self.assertEqual(result.stdout.splitlines(), ['external-j', '0'])
         external.unlink()
         # Re-source the exact managed path after replacing its old wrapper template.
-        legacy = self.home / 'shell.zsh'
+        managed = self.home / '.config/macos-setup'
+        shutil.copytree(ROOT / 'config/zsh', managed / 'zsh')
+        (managed / 'env.zsh').write_text((ROOT / 'config/env.zsh').read_text())
+        legacy = managed / 'shell.zsh'
         legacy.write_text('function j { z "$@"; }\n')
-        (self.home / 'env.zsh').write_text((ROOT / 'config/env.zsh').read_text())
-        result = self.zsh(zoxide + 'source "$HOME/shell.zsh"\ncp "$1" "$HOME/shell.zsh"\nsource "$HOME/shell.zsh"\nsource "$HOME/shell.zsh"\nj "two words" --flag\nprint -r -- "loads=$AUTOJUMP_TEST_LOADS"')
+        result = self.zsh(zoxide + 'source "$HOME/.config/macos-setup/shell.zsh"\ncp "$1" "$HOME/.config/macos-setup/shell.zsh"\nsource "$HOME/.config/macos-setup/shell.zsh"\nsource "$HOME/.config/macos-setup/shell.zsh"\nj "two words" --flag\nprint -r -- "loads=$AUTOJUMP_TEST_LOADS"')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.splitlines(), ['autojump', 'two words', '--flag', 'loads=1'])
         # An identical personal wrapper from a different source remains personal.
@@ -363,6 +369,8 @@ eval jc
         result = self.zsh(zoxide + 'source "$1"\nwhence -w j', interactive=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn('function', result.stdout)
+        result = self.zsh('zoxide() { return 23; }\nsource "$1"')
+        self.assertEqual(result.returncode, 23)
 
     @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('autojump') and shutil.which('zoxide'),
                          'macOS with Homebrew AutoJump and zoxide required for runtime smoke regression')
@@ -450,7 +458,7 @@ eval jc
     def fake_omz(self):
         folder = Path(self.env['ZSH'])
         for name in ('oh-my-zsh.sh', 'lib/git.zsh', 'lib/cli.zsh', 'themes/robbyrussell.zsh-theme',
-                     'plugins/git/git.plugin.zsh'):
+                     'plugins/git/git.plugin.zsh', 'custom/themes/powerlevel10k/powerlevel10k.zsh-theme'):
             path = folder / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('# fixture\n')
@@ -488,7 +496,7 @@ echo "ACTION $STEP_ACTION"
         self.env['ZSH'] = str(self.home / 'custom omz')
         folder = self.fake_omz()
         custom = folder / 'custom/themes/private.zsh-theme'
-        custom.parent.mkdir(parents=True)
+        custom.parent.mkdir(parents=True, exist_ok=True)
         custom.write_text('# personal theme\n')
         rc = self.home / '.zshrc'
         rc.write_text('export ZSH="' + str(folder) + '"\nZSH_THEME=private\nplugins=(git python)\nsource "$ZSH/oh-my-zsh.sh"\n')
@@ -543,6 +551,62 @@ ensure_ohmyzsh
         self.assertNotIn('WRONG', result.stdout)
         self.assertEqual((folder / 'private-theme').read_text(), 'preserve')
 
+    def test_powerlevel10k_atomic_install_repeat_and_manual_configuration(self):
+        self.fake_omz()
+        shutil.rmtree(self.home / '.oh-my-zsh/custom/themes/powerlevel10k')
+        result = self.shell('''
+git() {
+  if [[ "$1" == clone ]]; then
+    [[ "$2" == --depth=1 && "$3" == https://github.com/romkatv/powerlevel10k.git ]] || return 31
+    mkdir -p "$4/internal"
+    echo '# theme' > "$4/powerlevel10k.zsh-theme"
+    echo '# implementation' > "$4/internal/p10k.zsh"
+  else
+    echo WRONG
+    return 32
+  fi
+}
+ensure_powerlevel10k
+echo "ACTION $STEP_ACTION"
+echo "MANUAL$MANUAL_STEPS"
+''')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('ACTION installed', result.stdout)
+        self.assertIn('MANUAL powerlevel10k-configure', result.stdout)
+        directory = self.home / '.oh-my-zsh/custom/themes/powerlevel10k'
+        self.assertTrue((directory / 'powerlevel10k.zsh-theme').is_file())
+        self.assertFalse(list(directory.parent.glob('.macos-setup-p10k-*')))
+        result = self.shell('git() { echo WRONG; return 33; }; ensure_powerlevel10k; echo "$STEP_ACTION"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip().splitlines()[-1], 'skipped')
+        self.assertNotIn('WRONG', result.stdout)
+
+    def test_powerlevel10k_update_and_preservation_boundaries(self):
+        self.fake_omz()
+        directory = self.home / '.oh-my-zsh/custom/themes/powerlevel10k'
+        (directory / 'internal').mkdir()
+        (directory / 'internal/p10k.zsh').write_text('# implementation\n')
+        for remote, dirty, accepted in [('https://github.com/romkatv/powerlevel10k.git', '', True),
+                                         ('https://example.invalid/fork.git', '', False),
+                                         ('https://github.com/romkatv/powerlevel10k.git', ' M config', False)]:
+            result = self.shell(f'UPDATE=true; REMOTE={shlex.quote(remote)}; DIRTY={shlex.quote(dirty)}; ' + '''
+git() {
+  case "$3" in
+    remote) echo "$REMOTE";;
+    status) echo "$DIRTY";;
+    pull) echo "MUTATE $*";;
+  esac
+}
+ensure_powerlevel10k
+''')
+            self.assertEqual(result.returncode == 0, accepted, result.stderr)
+            self.assertEqual('MUTATE' in result.stdout, accepted)
+        shutil.rmtree(directory)
+        directory.write_text('personal placeholder\n')
+        result = self.shell('git() { echo WRONG; }; ensure_powerlevel10k; echo WRONG')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(directory.read_text(), 'personal placeholder\n')
+
     def test_extension_skip_install_update_and_verification(self):
         for installed, update, action in [('true', 'false', 'skipped'), ('false', 'false', 'installed'),
                                            ('true', 'true', 'update-checked')]:
@@ -578,13 +642,17 @@ echo "ACTION $STEP_ACTION"
 
     def test_real_zsh_default_existing_and_empty_themes_and_noninteractive(self):
         self.fake_omz()
-        for before, expected in [('', 'robbyrussell:git:1'), ('ZSH_THEME=custom; plugins=(git python);', 'custom:git python:1'),
+        for before, expected in [('', 'powerlevel10k/powerlevel10k:git:1'), ('ZSH_THEME=custom; plugins=(git python);', 'custom:git python:1'),
                                   ('ZSH_THEME="";', ':git:1'), ('omz() { :; }; ZSH_THEME=existing; plugins=(git); LOADS=0;', 'existing:git:0')]:
             result = self.zsh(before + 'source "$1"; source "$1"; print -r -- "$ZSH_THEME:${plugins[*]}:$LOADS"')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.strip(), expected)
         result = self.zsh('source "$1"; (( ! $+functions[omz] )); print OK', interactive=False)
         self.assertEqual(result.stdout.strip(), 'OK')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (Path(self.env['ZSH']) / 'custom/themes/powerlevel10k/powerlevel10k.zsh-theme').unlink()
+        result = self.zsh('source "$1"; print -r -- "$ZSH_THEME"')
+        self.assertEqual(result.stdout.strip(), 'robbyrussell')
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_real_zsh_environment_paths_deduplicate_and_keep_overrides(self):

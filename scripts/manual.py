@@ -44,12 +44,12 @@ def instructions(run_dir, config_dir, home=None, root=ROOT):
     complete = result.get('status') == 'success'
     claude = result.get('with_claude') is True
     pending = list(dict.fromkeys(name for name in result.get('manual_steps', [])
-                                if name in (*APPS, 'sogou-installer', 'kiro-cli-onboarding')
+                                if name in (*APPS, 'sogou-installer', 'kiro-cli-onboarding', 'powerlevel10k-configure')
                                 and (name != 'claude-desktop' or claude)))
     rows = read_json(run_dir / 'desktop-installers.json', [])
     packages = {row.get('component'): row for row in rows if isinstance(row, dict)} if isinstance(rows, list) else {}
     lines = []
-    downloads = [name for name in pending if name != 'kiro-cli-onboarding']
+    downloads = [name for name in pending if name not in ('kiro-cli-onboarding', 'powerlevel10k-configure')]
     if downloads:
         lines += ['[MANUAL] 以下安装包已准备，仍需你手动完成安装：',
                   '下载完成不代表应用已安装。按下列顺序逐项操作；命令仅供复制，不会自动执行。',
@@ -86,6 +86,10 @@ def instructions(run_dir, config_dir, home=None, root=ROOT):
                   '  先运行 git config --global --get user.name 和 git config --global --get user.email 检查身份。',
                   '  如果为空，请用你自己的值执行 git config --global user.name "Your Name" 及 git config --global user.email "you@example.com"。',
                   '• Codex CLI：在新终端运行 codex，按提示完成登录。']
+        if 'powerlevel10k-configure' in pending:
+            lines += ['• Powerlevel10k：不要用 source ~/.zshrc；运行 exec zsh 重新启动 Zsh。',
+                      '  若配置向导没有自动出现，运行 p10k configure；在 iTerm2 中选择已安装的 MesloLGS NF 字体。',
+                      '  向导会创建你自己的 ~/.p10k.zsh。已有显式主题保持不变，需要时再手动切换。']
         if claude:
             lines += ['• Claude Code CLI：在新终端运行 claude，按提示完成登录。']
         if 'docker-desktop' not in downloads:

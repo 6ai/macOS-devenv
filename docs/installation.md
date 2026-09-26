@@ -14,13 +14,16 @@
 | Codex CLI | 官方 shell 安装器 | 同默认 | 最新版本从官方元数据解析；已有其他渠道的健康安装保留。 |
 | Claude Code CLI | 默认关闭；`--with-claude` 使用官方 Bash 安装器 | 同默认，仍需显式启用 | 使用官方原生安装流程，不经 npm 或 Homebrew 绕一层。 |
 | Kiro CLI | 官方 Bash 安装器及其原生启动流程 | 官方 manifest 的 DMG + 显式 Zsh 集成 | 默认保留官方交互、替换提示和 onboarding；托管模式才单独校验放置 app、建立 CLI 链接、调用原生 Zsh dotfiles 集成。 |
+| Powerlevel10k | Oh My Zsh 官方布局中的浅层 Git checkout | 同默认 | 在 Oh My Zsh 健康后安装；仅在用户没有显式主题时启用。`p10k configure`、字体选择和生成的 `~/.p10k.zsh` 由用户完成并持有。 |
+| MesloLGS / JetBrains Mono Nerd Font | Homebrew 字体 cask | 同默认 | 安装器验证各字体 regular face；终端 Profile 的字体选择仍由用户完成，已有外部字体文件保留。 |
+| LazyGit | Homebrew formula | 同默认 | 提供 `lazygit` 与 Zsh `lg` 快捷方式；普通重跑跳过，`--update` 走 Homebrew 更新。 |
 | 搜狗输入法 | 仅 `--with-sogou` 下载官方 ZIP | 同默认 | 安装输入法与启用输入源始终由用户完成。 |
 
 ## 两种模式的结果含义
 
 默认模式安装开发工具、iTerm2/VS Code 和所选 AI CLI，并准备需要人工处理的桌面 DMG。下载记录保存文件名、来源、版本信息及 SHA-256；复用前重新检查文件摘要，损坏文件会重新下载。安装器不会自动打开这些 DMG 或替换对应的 Applications 副本。
 
-日志的 `prepared` 表示安装包完整。`result.json` 的 `desktop_mode` 记录策略，`with_claude` 记录是否启用 Claude，`manual_steps` 列出待人工安装或 onboarding 的项目；`desktop-installers.json` 记录本轮准备的包。默认运行成功表示所选自动步骤和下载准备成功，不等于所有桌面应用都已安装。清单中未安装的应用在 inventory 中为 null，并列入 pending_applications。
+日志的 `prepared` 表示安装包完整。`result.json` 的 `desktop_mode` 记录策略，`with_claude` 记录是否启用 Claude，`manual_steps` 列出待人工安装或 onboarding 的项目，包括尚未生成个人配置时的 Powerlevel10k 向导；`desktop-installers.json` 记录本轮准备的包。默认运行成功表示所选自动步骤和下载准备成功，不等于所有桌面应用都已安装。清单中未安装的应用在 inventory 中为 null，并列入 pending_applications。
 
 Claude Desktop 与 Claude Code CLI 由 `--with-claude` 一起启用。未选择时不下载、配置、检查或更新它们，也不删除已有安装。重跑、`--verify`、`--check-updates`、`--configure-only` 或 `--update` 需要继续带上该参数；托管桌面模式不隐含启用。
 
@@ -32,6 +35,8 @@ Claude Desktop 与 Claude Code CLI 由 `--with-claude` 一起启用。未选择�
 - `--update` 更新受管开发工具和官方 CLI，并从官方 latest/stable 源刷新桌面 DMG；已安装桌面应用仍由用户运行安装包或使用应用内更新器。
 - `--managed-desktop --update` 才自动更新脚本记录的 AI app；Chrome、Docker、iTerm2、VS Code 沿用其原来的受管 cask。健康的手动/其他渠道副本保留原更新器。
 - 默认 Kiro CLI 的官方应用负责集成和更新。已有安装被保留；损坏安装交回官方安装器的原生提示，不静默删除或替换。
+- Powerlevel10k 普通重跑跳过健康副本；`--update` 仅快进官方 origin 且无本地修改的 checkout。自定义 origin、符号链接和个人 `~/.p10k.zsh` 交回原管理方式。
+- 受管 Nerd Font 普通重跑按 regular face 判重；`--update` 更新 Homebrew 管理的 cask，外部字体文件保持原来源。
 - 私人配置、认证和登录不纳入接管；脚本安装记录只判断归属，不能替代健康检查。
 
 ## 来源依据

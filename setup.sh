@@ -21,6 +21,7 @@ Usage: ./setup.sh [MODE] [--update] [--managed-desktop] [--with-sogou] [--with-c
 Default: install missing tools, repair broken managed installs, preserve healthy tools.
 Default desktop policy: prepare official DMGs for manual installation; iTerm2/VS Code use casks.
 AI CLIs use official installers. Healthy existing tools are preserved.
+Powerlevel10k is installed after Oh My Zsh; existing explicit themes are preserved.
 --plan            Print the plan; no writes or downloads.
 --update          Update managed tools and refresh desktop DMGs (install mode only).
 --managed-desktop Automatically place desktop apps and configure Kiro hooks (explicit opt-in).
@@ -31,7 +32,7 @@ AI CLIs use official installers. Healthy existing tools are preserved.
 --verify          Check packages, executables, applications and configuration.
 --diagnose        Record environment and official-source network reachability only.
 --docker-smoke    Build and run a linux/amd64 container on a running Docker engine.
---config-dir DIR  Use ten external configuration templates (copy config/ first).
+--config-dir DIR  Use eighteen external configuration templates (copy config/ first).
 --log-dir DIR     Store private run logs here instead of ~/.local/state/macos-setup.
 --help            Show this help.
 Failures return nonzero. Fix the cause and rerun the same command; healthy tools are skipped.
@@ -205,6 +206,34 @@ ensure_formula() {
   # does not repair personal/system config permissions.
   if [[ "$package" == git ]]; then check_git_configuration; fi
   if [[ "$package" == git-lfs ]]; then ensure_git_lfs_filters; fi
+}
+
+font_cask_healthy() {
+  local filename=$2
+  [[ -s "$HOME/Library/Fonts/$filename" ]]
+}
+
+ensure_font_cask() {
+  local package=$1 filename=$2 reference="homebrew/cask/$1"
+  if brew list --cask "$reference" >/dev/null 2>&1; then
+    if ! font_cask_healthy "$package" "$filename"; then
+      warn "Managed font $package is incomplete; reinstalling."
+      run_package_installer brew reinstall --cask "$reference"
+      STEP_ACTION=repaired
+    elif [[ "$UPDATE" == true ]]; then
+      run_package_installer brew upgrade --cask "$reference"
+      STEP_ACTION=update-checked
+    else
+      STEP_ACTION=skipped
+    fi
+  elif font_cask_healthy "$package" "$filename"; then
+    echo "Preserving existing font file from its original installer: $filename"
+    STEP_ACTION=preserved
+  else
+    run_package_installer brew install --cask "$reference"
+    STEP_ACTION=installed
+  fi
+  font_cask_healthy "$package" "$filename" || fail "Font cask did not install its regular face: $package"
 }
 
 check_git_configuration() {
@@ -426,7 +455,7 @@ ensure_cask() {
 }
 
 install_packages() {
-  local package app
+  local package app filename
   while IFS= read -r -u 3 package; do
     [[ -n "$package" ]] || continue
     step_run "formula:$package" ensure_formula "$package"
@@ -436,6 +465,10 @@ install_packages() {
     if [[ "$package" == claude-desktop && "$WITH_CLAUDE" != true ]]; then continue; fi
     step_run "cask:$package" ensure_cask "$package" "$app"
   done 3<"$ROOT/config/casks.tsv"
+  while IFS=$'\t' read -r -u 3 package filename; do
+    [[ -n "$package" ]] || continue
+    step_run "font:$package" ensure_font_cask "$package" "$filename"
+  done 3<"$ROOT/config/font-casks.tsv"
 }
 
 agent_healthy() { "$1" --version >/dev/null 2>&1; }
@@ -529,7 +562,7 @@ execute_mode() {
       step_run verification verify_installation
       ;;
     install)
-      STEP_TOTAL=$((9 + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/formulae.txt") + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/casks.tsv") + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/vscode-extensions.txt")))
+      STEP_TOTAL=$((10 + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/formulae.txt") + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/casks.tsv") + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/font-casks.tsv") + $(awk 'NF { n++ } END { print n+0 }' "$ROOT/config/vscode-extensions.txt")))
       if [[ "$WITH_CLAUDE" != true ]]; then STEP_TOTAL=$((STEP_TOTAL - 2)); fi
       if [[ "$WITH_SOGOU" == true ]]; then STEP_TOTAL=$((STEP_TOTAL + 1)); fi
       step_run target check_install_target
@@ -539,6 +572,7 @@ execute_mode() {
       activate_paths
       step_run configuration apply_configuration
       step_run ohmyzsh ensure_ohmyzsh
+      step_run powerlevel10k ensure_powerlevel10k
       step_run kiro-shell ensure_kiro_shell
       install_extensions
       if [[ "$WITH_CLAUDE" == true ]]; then step_run claude check_agent claude; fi
@@ -595,11 +629,12 @@ main() {
   [[ -d "$CONFIG_DIR" ]] || fail "Missing configuration directory: $CONFIG_DIR"
   if [[ "$MODE" == plan ]]; then
     echo "Mode: install; update existing tools: $UPDATE; desktop mode: $DESKTOP_MODE; include Claude: $WITH_CLAUDE"
-    cat "$ROOT/config/formulae.txt" "$ROOT/config/vscode-extensions.txt"
+    cat "$ROOT/config/formulae.txt" "$ROOT/config/font-casks.tsv" "$ROOT/config/vscode-extensions.txt"
     awk -F '\t' -v claude="$WITH_CLAUDE" 'claude == "true" || ($1 !~ /^claude/ && $1 != "anthropic")' "$ROOT/config/casks.tsv" "$ROOT/config/sources.tsv"
     echo "Configuration templates: $CONFIG_DIR"
     echo 'Default: official desktop DMGs in ~/Downloads/macos-setup; install and onboard manually.'
     echo 'iTerm2/VS Code use official casks; selected AI CLIs use vendor installers.'
+    echo 'Powerlevel10k follows Oh My Zsh; existing explicit themes remain user-owned.'
     echo 'Claude Desktop and Claude Code CLI require --with-claude, including verification and updates.'
     echo '--managed-desktop opts into automatic desktop placement and Kiro shell integration.'
     echo '--update refreshes recorded official installations; existing unmanaged copies are preserved.'

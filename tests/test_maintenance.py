@@ -24,8 +24,10 @@ class MaintenanceTests(unittest.TestCase):
         shutil.copytree(ROOT / 'config', self.root / 'config')
         shutil.copyfile(ROOT / 'VERSION', self.root / 'VERSION')
         (self.home / '.oh-my-zsh').mkdir(parents=True)
+        (self.home / '.oh-my-zsh/custom/themes/powerlevel10k').mkdir(parents=True)
         self.formulae = (self.root / 'config/formulae.txt').read_text().split()
         self.casks = dict(line.split('\t') for line in (self.root / 'config/casks.tsv').read_text().splitlines())
+        self.fonts = dict(line.split('\t') for line in (self.root / 'config/font-casks.tsv').read_text().splitlines())
         self.extensions = (self.root / 'config/vscode-extensions.txt').read_text().split()
         self.local = {'formulae': [dict(name=name.rsplit('/', 1)[-1], tap=name.rsplit('/', 1)[0] if '/' in name else 'homebrew/core', linked_keg='1.0.0', installed=[])
                                   for name in self.formulae], 'casks': []}
@@ -33,6 +35,12 @@ class MaintenanceTests(unittest.TestCase):
             directory = self.home / 'Applications' / app / 'Contents'
             directory.mkdir(parents=True)
             (directory / 'Info.plist').write_bytes(plistlib.dumps({'CFBundleShortVersionString': '1.0.0'}))
+        for name, filename in self.fonts.items():
+            path = self.home / 'Library/Fonts' / filename
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('font fixture')
+            self.local['casks'].append({'token': name, 'version': '1.0.0',
+                                        'installed': [{'version': '1.0.0'}]})
         for name, (_, relative, _) in maintenance.TEMPLATES.items():
             path = self.home / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,8 +61,11 @@ class MaintenanceTests(unittest.TestCase):
             if 'status' in args:
                 return ''
             if 'remote' in args:
-                return ('https://github.com/6ai/macOS-devenv.git' if args[2] == str(self.root)
-                        else 'https://github.com/ohmyzsh/ohmyzsh.git')
+                if args[2] == str(self.root):
+                    return 'https://github.com/6ai/macOS-devenv.git'
+                if args[2].endswith('/powerlevel10k'):
+                    return 'https://github.com/romkatv/powerlevel10k.git'
+                return 'https://github.com/ohmyzsh/ohmyzsh.git'
         self.fail(f'Unexpected command {args}')
 
     def shell(self, function, *args):
@@ -105,10 +116,11 @@ class MaintenanceTests(unittest.TestCase):
         before = {p:p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
         report = self.check()
         expected = ({'formula:' + name for name in self.formulae} | {'cask:' + name for name in self.casks}
+                    | {'font:' + name for name in self.fonts}
                     | {'vscode:' + name for name in self.extensions}
-                    | {'config:' + name for name in ('claude-settings.json', 'codex-config.toml', 'kiro-permissions.json',
-                       'env.zsh', 'shell.zsh', 'vimrc', 'iterm2-profile.json', 'vscode-settings.json')}
-                    | {'cli:claude', 'cli:codex', 'homebrew', 'setup-repository', 'ohmyzsh', 'macos'})
+                    | {'config:' + name for name in maintenance.TEMPLATES}
+                    | {'cli:claude', 'cli:codex', 'homebrew', 'setup-repository', 'ohmyzsh',
+                       'powerlevel10k', 'macos'})
         self.assertEqual({item['component'] for item in report['items']}, expected)
         self.assertEqual(len(report['items']), len(expected))
         self.assertEqual(sum(report['summary'].values()), len(expected))

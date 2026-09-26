@@ -1,6 +1,6 @@
 # Sources and update procedure
 
-核对基线：2026-09-06。原生安装器地址的唯一执行清单是 [`config/sources.tsv`](../config/sources.tsv)。修改本文的链接不会偷偷改变安装行为；必须同时修改清单、golden fixture 并通过检查。
+核对基线：2026-09-27。原生安装器和 Powerlevel10k Git 地址的唯一执行清单是 [`config/sources.tsv`](../config/sources.tsv)。修改本文的链接不会偷偷改变安装行为；必须同时修改清单、golden fixture 并通过检查。
 
 AI 官方安装入口补充核对：2026-09-25；其他桌面应用、Oh My Zsh、VS Code 扩展及 Chrome / 搜狗渠道：2026-09-07。原生脚本下载地址由 `sources.tsv` 控制；Homebrew 包的安装地址由各自官方 tap 的 formula/cask 定义控制，并从厂商分发站点获取。可选的 `--with-sogou` 扩展由 Cask 提供版本、完整 URL 和 SHA-256，`sources.tsv` 的 distribution 行另限制允许的官方分发前缀；脚本直接下载原 ZIP。
 
@@ -16,12 +16,15 @@ AI 官方安装入口补充核对：2026-09-25；其他桌面应用、Oh My Zsh�
 | Kiro CLI / Zsh | 默认使用官方安装脚本和 onboarding；托管模式才解析 manifest 并配置 Zsh | [Cask](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/k/kiro-cli.rb)、[CLI 命令](https://kiro.dev/docs/reference/cli-commands/)、[补全](https://kiro.dev/docs/cli/autocomplete/)、[2.x 信任规则](https://kiro.dev/docs/cli/2x-reference/) |
 | Kiro IDE（默认下载 DMG） | [官方下载页](https://kiro.dev/downloads/)，`prod.download.desktop.kiro.dev` 官方架构专用 DMG | [安装](https://kiro.dev/docs/getting-started/installation/)、[Cask](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/k/kiro.rb)、[权限规范](https://kiro.dev/docs/permissions/)、[数据保护](https://kiro.dev/docs/privacy-and-security/data-protection/) |
 | Oh My Zsh | `https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh`，unattended / KEEP_ZSHRC=yes / CHSH=no / RUNZSH=no | [官方安装说明](https://github.com/ohmyzsh/ohmyzsh#unattended-install)、[主题源码](https://github.com/ohmyzsh/ohmyzsh/blob/master/themes/robbyrussell.zsh-theme) |
+| Powerlevel10k | 官方仓库浅层 clone 到 Oh My Zsh custom themes；无显式主题时选用 | [Oh My Zsh 安装](https://github.com/romkatv/powerlevel10k#oh-my-zsh)、[配置向导](https://github.com/romkatv/powerlevel10k#configuration-wizard)、[字体说明](https://github.com/romkatv/powerlevel10k#fonts) |
 | Docker Desktop | 默认官方 arm64 DMG；托管模式使用官方 cask | [Mac 安装说明](https://docs.docker.com/desktop/setup/install/mac-install/)、[cask](https://formulae.brew.sh/cask/docker-desktop) |
 | iTerm2 | Homebrew `iterm2` cask | [官网](https://iterm2.com/)、[Dynamic Profiles](https://iterm2.com/documentation-dynamic-profiles.html)、[按键配置](https://iterm2.com/documentation-preferences-profiles-keys.html)、[官方按键预设源码](https://github.com/gnachman/iTerm2/blob/master/plists/PresetKeyMappings.plist) |
 | VS Code | Homebrew `visual-studio-code` cask | [官网](https://code.visualstudio.com/)、[cask](https://formulae.brew.sh/cask/visual-studio-code) |
 | Google Chrome | 默认 Google 官方 Universal DMG；托管模式使用官方 cask | [官网](https://www.google.com/chrome/)、[Cask 下载地址与安装步骤](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/g/google-chrome.rb)、[官方 PKG 说明](https://support.google.com/chrome/a/answer/9020580?hl=zh-Hans) |
 | 搜狗输入法（可选扩展、手动完成） | `--with-sogou` 下载官方 ZIP 到 Downloads；Homebrew `sogouinput` 提供 URL/校验和，安装器标记为 manual | [官网与下载入口](https://pinyin.sogou.com/mac/)、[官方更新日志](https://pinyin.sogou.com/mac/update_log.php)、[Cask 地址和 SHA-256](https://github.com/Homebrew/homebrew-cask/blob/master/Casks/s/sogouinput.rb) |
 | Go | Homebrew 无版本后缀的 `go` formula；Zsh 追加有效的 `GOBIN` 或 `GOPATH/bin` | [Go macOS 安装与 PATH](https://go.dev/doc/install)、[Go 发布](https://go.dev/dl/)、[formula](https://formulae.brew.sh/formula/go) |
+| LazyGit | Homebrew `lazygit` formula；Zsh 提供 `lg` 别名 | [官方仓库](https://github.com/jesseduffield/lazygit)、[formula](https://formulae.brew.sh/formula/lazygit) |
+| 编程字体 | Homebrew `font-meslo-lg-nerd-font`、`font-jetbrains-mono-nerd-font` cask | [MesloLGS Nerd Font cask](https://formulae.brew.sh/cask/font-meslo-lg-nerd-font)、[JetBrains Mono Nerd Font cask](https://formulae.brew.sh/cask/font-jetbrains-mono-nerd-font) |
 | 其余命令行工具 | [`formulae.txt`](../config/formulae.txt) 中的 Homebrew 官方 formula | `https://formulae.brew.sh/formula/<token>`；页面给出上游官网、源码仓库、版本和 bottle 支持 |
 
 0.1.40 默认采用 [安装方式汇总](installation.md) 中的分工：桌面先检查已有应用，缺失时下载官方 DMG；iTerm2/VS Code 使用 cask；AI CLI 优先官方脚本。`--managed-desktop` 保留自动放置桌面应用与 Kiro hook 配置。
@@ -52,7 +55,7 @@ IDE Cask 为 1.0.437，固定架构对应 SHA-256，通过厂商 signed DMG 分�
 - VS Code 扩展通过[官方 CLI](https://code.visualstudio.com/docs/configure/command-line)从 Marketplace 安装；[Container Tools 官方说明](https://code.visualstudio.com/docs/containers/overview)。逐项发布页：[Go](https://marketplace.visualstudio.com/items?itemName=golang.Go)、[Python](https://marketplace.visualstudio.com/items?itemName=ms-python.python)、[Container Tools](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.vscode-containers)、[ESLint](https://marketplace.visualstudio.com/items?itemName=dbaeumer.vscode-eslint)、[Prettier](https://marketplace.visualstudio.com/items?itemName=esbenp.prettier-vscode)、[YAML](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)、[TOML](https://marketplace.visualstudio.com/items?itemName=tamasfe.even-better-toml)、[ShellCheck](https://marketplace.visualstudio.com/items?itemName=timonwong.shellcheck)。这些扩展由各自发布者维护，并非全部由 Microsoft 维护。
 - iTerm2 使用官方 [Dynamic Profiles](https://iterm2.com/documentation-dynamic-profiles.html) 与 [Profile Colors](https://iterm2.com/documentation-preferences-profiles-colors.html) 字段。Clean Dark 是本项目的颜色模板，Menlo 是系统字体；没有从用户配置或私人主题中复制。
 - Codex [CODEX_HOME 环境变量](https://learn.chatgpt.com/docs/config-file/environment-variables) 与 Claude [CLAUDE_CONFIG_DIR](https://code.claude.com/docs/en/env-vars) 决定配置目录；脚本尊重调用者已设置的绝对路径。GUI 环境继承不能由终端 PATH 配置保证。
-- Powerlevel10k 仅作为后续可选项，未纳入安装；其[字体说明](https://github.com/romkatv/powerlevel10k#fonts)是之后配置 MesloLGS NF 和向导的入口。
+- Powerlevel10k 在 Oh My Zsh 之后安装；现有显式主题不切换。首次启用后使用 `exec zsh`，由 `p10k configure` 创建个人 `~/.p10k.zsh`。安装器已通过 Homebrew 准备 MesloLGS 和 JetBrains Mono Nerd Font，但不改终端 Profile；用户按[字体说明](https://github.com/romkatv/powerlevel10k#fonts)选择。上游目前声明维护支持有限，因此本项目不自动改写个人配置，也不在普通重跑时追随滚动更新。
 
 ## Homebrew 信任与下载超时
 

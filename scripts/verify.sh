@@ -25,7 +25,12 @@ while IFS=$'\t' read -r -u 3 package app; do
   /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$(app_path "$app")/Contents/Info.plist"
 done 3<"$ROOT/config/casks.tsv"
 
-for executable in git git-lfs gh go node npm python3 uv rg duf fd bat fzf autojump zoxide jq yq tmux tree delta tig wget htop shellcheck shfmt ffmpeg magick glow pop gum crush claude codex; do
+while IFS=$'\t' read -r -u 3 package filename; do
+  [[ -n "$package" ]] || continue
+  font_cask_healthy "$package" "$filename"
+done 3<"$ROOT/config/font-casks.tsv"
+
+for executable in git git-lfs gh go node npm python3 uv rg duf fd bat fzf autojump zoxide jq yq tmux tree delta tig lazygit wget htop shellcheck shfmt ffmpeg magick glow pop gum crush claude codex; do
   if [[ "$executable" == claude && "$WITH_CLAUDE" != true ]]; then continue; fi
   command -v "$executable"
 done
@@ -63,6 +68,8 @@ python3 "$ROOT/scripts/configure.py" --verify --config-dir "$CONFIG_DIR"
 verify_editor
 zsh -n "$HOME/.config/macos-setup/env.zsh"
 zsh -n "$HOME/.config/macos-setup/shell.zsh"
+export POWERLEVEL9K_DISABLE_CONFIGURATION_WIZARD=true
+zsh -lic 'if [[ ${ZSH_THEME:-} == powerlevel10k/powerlevel10k ]]; then (( $+functions[p10k] )); fi'
 if [[ "$WITH_CLAUDE" == true ]]; then zsh -lic 'command -v claude'; fi
 zsh -lic 'command -v codex && command -v go && command -v code && [[ -n $GOPATH ]] || exit
 if [[ -n ${GOBIN:-} ]]; then

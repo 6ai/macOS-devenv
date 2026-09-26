@@ -6,7 +6,15 @@
 | `kiro-permissions.json` | `~/.kiro/settings/permissions.yaml`；新环境所有工具操作询问，已有个人 YAML 保留并提示审阅 |
 | `codex-config.toml` | `${CODEX_HOME:-~/.codex}/config.toml`；工作区写入、按需确认；已有文件保留 |
 | `env.zsh` | `~/.config/macos-setup/env.zsh`；Homebrew、AI CLI、Docker、Go 工具和 VS Code 的 PATH |
-| `shell.zsh` | `~/.config/macos-setup/shell.zsh`；Oh My Zsh、历史、快捷键、常用别名 |
+| `shell.zsh` | `~/.config/macos-setup/shell.zsh`；交互配置 loader，按固定顺序加载下列八个模块 |
+| `zsh/framework.zsh` | Oh My Zsh 与 Powerlevel10k 主题选择 |
+| `zsh/options.zsh` | Zsh 键位、历史记录与 shell options |
+| `zsh/tools.zsh` | AutoJump、zoxide 与 fzf 初始化 |
+| `zsh/development.zsh` | Make、Git、Go、Docker、AI CLI 和 LazyGit 别名 |
+| `zsh/utilities.zsh` | 目录、文件、查看、剪贴板、哈希与编码工具 |
+| `zsh/media.zsh` | 音视频、图片转换和脚本模板函数 |
+| `zsh/git-functions.zsh` | 带参数检查和失败传播的 Git 函数 |
+| `zsh/terminal.zsh` | 编辑器、tmux、Docker 清理和终端杂项 |
 | `vimrc` | `~/.config/macos-setup/vimrc`；UTF-8、语法高亮、行号、四空格缩进、空白字符显示和命令纠错 |
 | `git-defaults.json` | 只向 Git global config 补入缺失的通用行为和 alias；已有值保留 |
 | `gitignore-global` | 新环境安装到 `~/.config/macos-setup/gitignore-global`；已有 `core.excludesFile` 及文件保留 |
@@ -17,17 +25,17 @@
 
 ```bash
 cp -R config local-config
-# 编辑 local-config 中的十个模板
+# 编辑 local-config 中的十八个模板（包括 zsh/ 下八个模块）
 ./setup.sh --config-dir ./local-config
 # 只应用配置，需要 Python 3.11+
 ./setup.sh --configure-only --config-dir ./local-config
 ```
 
-若升级前已创建外部配置目录，需要把 `config/git-defaults.json` 和 `config/gitignore-global` 连同其他模板同步到该目录；缺少新模板时配置步骤会明确报错。
+若升级前已创建外部配置目录，需要把 `config/zsh/` 八个模块、`config/git-defaults.json` 和 `config/gitignore-global` 连同其他模板同步到该目录；缺少新模板时配置步骤会明确报错。
 
-外部目录只控制十个模板，不改变包清单和执行下载地址。已有 AI 文件始终保留；Git 默认值也只补缺失项。需要变更现有 AI 配置时直接编辑其安装位置。旧环境迁移时，旧 shell、Vim、Git 或 AI 配置里的个人设置仍由使用者审阅。
+外部目录只控制十八个模板，不改变包清单和执行下载地址。已有 AI 文件始终保留；Git 默认值也只补缺失项。需要变更现有 AI 配置时直接编辑其安装位置。旧环境迁移时，旧 shell、Vim、Git 或 AI 配置里的个人设置仍由使用者审阅。
 
-覆盖项目管理的 env/shell/Vim/iTerm2 文件前会生成 `.backup-*` 备份；修改 `.zshrc`/`.zprofile`/`.vimrc` 时也备份原文件。写入采用同目录临时文件与原子替换，相同内容跳过，source 行不重复添加。目标文件为符号链接时退出，避免破坏其他 dotfiles 管理器。
+覆盖项目管理的 env/shell/Zsh 模块/Vim/iTerm2 文件前会生成 `.backup-*` 备份；修改 `.zshrc`/`.zprofile`/`.vimrc` 时也备份原文件。写入采用同目录临时文件与原子替换，相同内容跳过，source 行不重复添加。旧版直接 `source`、点命令和双中括号写法会在原位置收敛为一条规范 loader，前后的个人行保持原顺序；只匹配列明的完整行，不模糊删除含相似路径的个人命令。升级先发布模块再替换 loader，避免新 loader 指向尚未写入的文件。`--verify` 对全部受管 shell 文件做精确字节检查。目标文件或模块目录为符号链接时退出，避免破坏其他 dotfiles 管理器。
 
 恢复配置时，在相关应用退出后，从相应 `.backup-*` 中选取需要的版本，先检查内容，再复制回同名原文件。没有自动批量删除备份或恢复私人设置的命令。
 
@@ -47,14 +55,16 @@ set undofile
 
 ### Zsh、Oh My Zsh 与环境变量
 
-- 登录 shell 从 `.zprofile` 加载 `env.zsh`；交互 shell 从 `.zshrc` 加载 `shell.zsh`。旧版 `.zprofile` 的项目 source 行自动迁移，不在非交互 shell 中初始化主题。设置了绝对路径 `ZDOTDIR` 时，使用其下的 `.zprofile` / `.zshrc`。
+- 登录 shell 从 `.zprofile` 加载 `env.zsh`；交互 shell 从 `.zshrc` 加载 `shell.zsh`，再由 loader 顺序加载 `zsh/` 中八个模块。`.zshrc` 与 `.zprofile` 的原有首尾内容保留，个人覆盖放在项目 source 行之后。旧版 `.zprofile` 的项目 source 行自动迁移，不在非交互 shell 中初始化主题。设置了绝对路径 `ZDOTDIR` 时，使用其下的 `.zprofile` / `.zshrc`。
 - 缺少 Oh My Zsh 时使用[官方 unattended 安装器](https://github.com/ohmyzsh/ohmyzsh#unattended-install)，保留 `.zshrc`，不运行 `chsh`。iTerm2 和新 VS Code 终端明确使用 `/bin/zsh -l`；其他终端的默认 shell 可自行调整。
-- 新环境采用 **robbyrussell** 主题、`git` 插件；提示符简洁显示目录和 Git 状态，无需 Nerd Font。已有 Oh My Zsh 实例、显式主题（包括空主题）和插件列表保留。个人覆盖可写在 `.zshrc` 项目 source 行之后。
-- 已有完整 Oh My Zsh 默认跳过；`--update` 只更新无本地修改的官方 Git checkout。自定义 fork 或不完整目录提示使用原方式维护，避免覆盖私人主题。项目加载的 Oh My Zsh 关闭自动更新提示，由显式 `--update` 管理；已有独立加载配置沿用原设置。
+- 完整安装在 Oh My Zsh 健康后，将 Powerlevel10k 浅层 clone 到 `${ZSH_CUSTOM:-$ZSH/custom}/themes/powerlevel10k`。用户没有设置 `ZSH_THEME` 且主题文件存在时采用 **powerlevel10k/powerlevel10k**；`--configure-only` 尚未安装主题时安全回退到 **robbyrussell**。已有 Oh My Zsh 实例、显式主题（包括空主题）、插件列表和 `~/.p10k.zsh` 均保留。个人覆盖可写在 `.zshrc` 项目 source 行之后。
+- 已有完整 Oh My Zsh 与 Powerlevel10k 默认跳过；`--update` 只更新无本地修改的官方 Git checkout。Powerlevel10k 的自定义 origin、符号链接、Oh My Zsh 自定义 fork 或不完整目录提示使用原方式维护，避免覆盖私人主题。项目加载的 Oh My Zsh 关闭自动更新提示，由显式 `--update` 管理；已有独立加载配置沿用原设置。
 - PATH 去重，加入 `~/.local/bin`、Docker CLI、VS Code CLI。Go 优先保留 shell 中已有的 `GOPATH` / `GOBIN`；未显式设置时读取持久化的 `go env GOPATH` / `go env GOBIN`，再以 `~/go` 兜底。有效 `GOPATH`（以及非空 `GOBIN`）会导出；按照 [Go 官方 macOS 安装说明](https://go.dev/doc/install)，`GOBIN` 或每个 `GOPATH/bin` 追加到 PATH；不设置 `GOROOT`。
 - 已有 `CODEX_HOME` / `CLAUDE_CONFIG_DIR` 被配置步骤尊重，要求绝对路径。不把 API key、代理、账号写进模板，也不导出到全局 GUI 环境。由 Finder 启动的应用不能假定自动继承终端环境变量；按应用官方设置独立配置。
 
-**暂不安装 Powerlevel10k。** 它需要另行选择字体和运行配置向导；如果之后选用，可参照[项目字体与配置说明](https://github.com/romkatv/powerlevel10k#fonts)安装 MesloLGS NF、切换 iTerm2 字体并运行 `p10k configure`。目前 Menlo + robbyrussell 已能直接使用。
+Powerlevel10k 首次启用后不要用 `source ~/.zshrc` 重载；运行 `exec zsh`。向导通常会自动出现，否则运行 `p10k configure`。安装器通过 Homebrew 安装 MesloLGS NF 和 JetBrains Mono Nerd Font；在 iTerm2 Settings → Profiles → Text 中选择需要的字体，或让 P10k 向导选择 MesloLGS NF。字体安装不会自动改变已有 Profile。向导生成的 `~/.p10k.zsh` 属于个人配置，安装器不读取、覆盖或删除。上游目前声明项目支持有限、没有新功能计划；安装器只在显式 `--update` 时尝试安全快进官方副本。
+
+需要持续维护且跨 shell 的替代方案时，优先考虑 [Starship](https://starship.rs/)；更复杂的跨平台主题和 segment 模板可使用 [Oh My Posh](https://ohmyposh.dev/)，偏好原生 Zsh 配置可选择 [Spaceship](https://spaceship-prompt.sh/)。提示符引擎应只初始化一个；切换前显式禁用当前 `ZSH_THEME`，再按目标项目说明加载。安装器当前只管理 Powerlevel10k，不读取或改写其他 prompt 的个人配置。
 
 ### Make、Git、Go、Docker 快捷命令
 
@@ -62,7 +72,7 @@ set undofile
 
 | 组 | 别名 → 命令 |
 | --- | --- |
-| 基础 | `g` → `git`；`dk` → `docker`；`dc` → `docker compose`；`ll` → `ls -lah`；`d` → 目录栈（函数，`dirs -v \| head -n 10`） |
+| 基础 | `g` → `git`；`lg` → `lazygit`；`dk` → `docker`；`dc` → `docker compose`；`ll` → `ls -lah`；`d` → 目录栈（函数，`dirs -v \| head -n 10`） |
 | Make | `m` → `make`；`mb` → `make build`；`mi` → `make install`；`mr` → `make run` |
 | Make | `mt` → `make test`；`mp` → `make preview` |
 | Git | `ga` → `git add`；`gaa` → `git add --all`；`gci` / `gcia` → `git commit -a -m` / `git commit --amend -a -m`（函数，缺提交信息时报错） |
@@ -115,7 +125,7 @@ gtest                      # Go race / coverage 测试
 
 ### Git 全局默认值与隐私边界
 
-`git-defaults.json` 提供 `git st`、`git lg`、`git ps1`、`git rb`、`git stat`、`git sts`、`git tig` 等常用 alias，并补齐 `main` 初始分支、`pull.rebase`、自动设置 push upstream、fetch prune、rerere、delta pager 和 VS Code diff/merge。它们依赖的 Git、Git LFS、GitHub CLI、delta、tig 和 VS Code 都在声明的 formula/cask 与严格验证清单中。
+`git-defaults.json` 提供 `git st`、`git lg`、`git ps1`、`git rb`、`git stat`、`git sts`、`git tig` 等常用 alias，并补齐 `main` 初始分支、`pull.rebase`、自动设置 push upstream、fetch prune、rerere、delta pager 和 VS Code diff/merge。独立的 Zsh `lg` 启动 LazyGit。它们依赖的 Git、Git LFS、GitHub CLI、delta、tig、LazyGit 和 VS Code 都在声明的 formula/cask 与严格验证清单中。
 
 配置步骤先读取 Git 的 global config（包括 include），只对完全缺失的 key 执行 `git config --global --add`。已有 key 无论是否与模板相同都保留；首次确需补项时，将普通文件 `~/.gitconfig` 备份到 `~/.config/macos-setup/backups/gitconfig.backup-*` 并设为 0600。符号链接 `~/.gitconfig` 需要由原 dotfiles 管理方式自行更新，安装器不会沿链接改写。`--verify` 检查默认 key 均存在及有效 global ignore 文件，不输出配置值。
 
@@ -190,13 +200,13 @@ ESLint 检查 JS/TS 代码问题，Prettier 负责排版；遵循项目自己的
 
 这些手动可选扩展由 VS Code 管理更新，不进入本脚本的必装验收和维护报告。安装 Remote SSH 不会自动开放 Mac 的远程登录；安装 Dev Containers 也不代表 Docker 引擎已经就绪。内置 Git、JS/TS、JSON、Markdown 支持优先使用，不默认增加 GitLens、Code Runner、主题包或第二套 AI 编程扩展。
 
-完整清单在 [`vscode-extensions.txt`](../config/vscode-extensions.txt)，扩展可能安装自己的依赖。新环境默认 **Default Dark Modern** 主题、Zsh 登录终端。已有 `settings.json`（包括 JSONC 注释）原样保留，不强制覆盖主题、保存时格式化或项目格式化器。`--verify` 检查八个 ID 是否存在，`inventory.json` 只记录这些扩展的版本以及 Oh My Zsh 的 Git revision，不收集全部私人扩展清单。检查当前用户默认本地扩展环境；远程容器、SSH 环境或单独 VS Code Profile 需要各自安装。
+完整清单在 [`vscode-extensions.txt`](../config/vscode-extensions.txt)，扩展可能安装自己的依赖。新环境默认 **Default Dark Modern** 主题、Zsh 登录终端。已有 `settings.json`（包括 JSONC 注释）原样保留，不强制覆盖主题、保存时格式化或项目格式化器。`--verify` 检查八个 ID 是否存在，`inventory.json` 记录这些扩展版本、声明的字体 cask 以及 Oh My Zsh/Powerlevel10k Git revision，不收集全部私人扩展清单。检查当前用户默认本地扩展环境；远程容器、SSH 环境或单独 VS Code Profile 需要各自安装。
 
 ## iTerm2 与真机操作
 
 在 Profiles 菜单选择 **Clean Setup**，可在 Settings → Profiles → Other Actions 设为默认。它使用 Zsh 登录 shell，配合上面的 Oh My Zsh 配置。
 
-**主题为 Clean Dark**：深灰背景、浅色文字、蓝色光标和完整 16 色 ANSI 配色；字体为系统自带 **Menlo 13**，关闭透明和模糊，不需要额外字体。颜色、字体、键位都写在独立的 Dynamic Profile 中，其他 Profile 保留。要持久修改，可编辑外部 `iterm2-profile.json` 模板后重新配置，或把此 Profile 复制成自己的普通 Profile。
+**主题为 Clean Dark**：深灰背景、浅色文字、蓝色光标和完整 16 色 ANSI 配色；初始字体为系统自带 **Menlo 13**，关闭透明和模糊。安装器准备 MesloLGS / JetBrains Mono Nerd Font；Powerlevel10k 向导可切换到 MesloLGS NF，也可在 Profile 的 Text 设置中手动选择。颜色、初始字体、键位都写在独立的 Dynamic Profile 中，其他 Profile 保留。要持久修改，可编辑外部 `iterm2-profile.json` 模板后重新配置，或把此 Profile 复制成自己的普通 Profile。
 
 | 按键 | 行为 |
 | --- | --- |

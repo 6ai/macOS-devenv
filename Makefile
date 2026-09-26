@@ -6,6 +6,7 @@ build:
 	@for file in $(SHELL_FILES); do bash -n "$$file"; done
 	zsh -n config/shell.zsh
 	zsh -n config/env.zsh
+	@for file in config/zsh/*.zsh; do zsh -n "$$file"; done
 	$(PYTHON) -m compileall -q scripts tests apps
 	awk -f scripts/plain-log.awk /dev/null
 	shellcheck -x $(SHELL_FILES)

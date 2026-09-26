@@ -25,6 +25,14 @@ TEMPLATES = {
     'kiro-permissions.json': (None, '.kiro/settings/permissions.yaml', True),
     'env.zsh': (None, '.config/macos-setup/env.zsh', False),
     'shell.zsh': (None, '.config/macos-setup/shell.zsh', False),
+    'zsh/framework.zsh': (None, '.config/macos-setup/zsh/framework.zsh', False),
+    'zsh/options.zsh': (None, '.config/macos-setup/zsh/options.zsh', False),
+    'zsh/tools.zsh': (None, '.config/macos-setup/zsh/tools.zsh', False),
+    'zsh/development.zsh': (None, '.config/macos-setup/zsh/development.zsh', False),
+    'zsh/utilities.zsh': (None, '.config/macos-setup/zsh/utilities.zsh', False),
+    'zsh/media.zsh': (None, '.config/macos-setup/zsh/media.zsh', False),
+    'zsh/git-functions.zsh': (None, '.config/macos-setup/zsh/git-functions.zsh', False),
+    'zsh/terminal.zsh': (None, '.config/macos-setup/zsh/terminal.zsh', False),
     'vimrc': (None, '.config/macos-setup/vimrc', False),
     'iterm2-profile.json': (None, 'Library/Application Support/iTerm2/DynamicProfiles/clean-setup.json', False),
     'vscode-settings.json': (None, 'Library/Application Support/Code/User/settings.json', True),
@@ -172,6 +180,7 @@ class Checker:
         formulae = (self.root / 'config/formulae.txt').read_text().split()
         casks = [line.split('\t') for line in (self.root / 'config/casks.tsv').read_text().splitlines()
                  if self.with_claude or not line.startswith('claude-desktop\t')]
+        fonts = [line.split('\t') for line in (self.root / 'config/font-casks.tsv').read_text().splitlines()]
         local = self.attempt('homebrew:inventory', lambda: json.loads(command('brew', 'info', '--json=v2', '--installed')))
         by_name, managed_casks = {}, {}
         if local is not None:
@@ -185,8 +194,9 @@ class Checker:
         channels = {name: (name.rsplit('/', 1)[-1] if name.startswith('charmbracelet/tap/')
                           and name not in by_name and name.rsplit('/', 1)[-1] in by_name else name)
                     for name in formulae}
-        queries = [('formula', name) for name in formulae] + [('cask', name) for name, _ in casks
-                                                            if name not in EXTERNAL_APPS]
+        queries = ([('formula', name) for name in formulae] +
+                   [('cask', name) for name, _ in casks if name not in EXTERNAL_APPS] +
+                   [('cask', name) for name, _ in fonts])
         def entry(kind, name):
             if kind == 'formula' and name.startswith('charmbracelet/tap/'):
                 # Read generated public metadata as text; never evaluate Ruby or change tap trust.
@@ -282,6 +292,27 @@ class Checker:
             self.add('cask:' + name, installed, latest, manager, state,
                      'Official stable/latest metadata; default prepares desktop DMGs. --managed-desktop --update updates recorded apps; other copies use their own updater.' if external else
                      'Actual app version, including self-updates; user/unmanaged copies use their own updater.')
+        for name, filename in fonts:
+            data = catalog.get(('cask', name))
+            latest = data.get('version') if data else None
+            item = managed_casks.get(name)
+            path = self.home / 'Library/Fonts' / filename
+            installed = None
+            if item:
+                installed = item.get('version')
+                if not installed and item.get('installed'):
+                    entry = item['installed'][-1]
+                    installed = entry.get('version') if isinstance(entry, dict) else str(entry)
+            if path.is_file() and path.stat().st_size:
+                state = compare(installed, latest) if installed else 'preserved'
+                manager = 'homebrew' if item else 'original'
+            else:
+                state = 'repair_needed' if item else 'missing'
+                manager = 'homebrew'
+            if data and (data.get('disabled') or data.get('deprecated')):
+                state = 'manual'
+            self.add('font:' + name, installed, latest, manager, state,
+                     'Homebrew Nerd Font cask; verify the declared regular face in ~/Library/Fonts.')
         for name in (('claude', 'codex') if self.with_claude else ('codex',)):
             executable = shutil.which(name)
             value = self.attempt('cli:' + name, command, name, '--version') if executable else None
@@ -353,6 +384,10 @@ class Checker:
         self.repository('setup-repository', self.root, self.sources['maintenance-setup'], 'main')
         self.repository('ohmyzsh', Path(os.environ.get('ZSH') or self.home / '.oh-my-zsh'),
                         self.sources['maintenance-ohmyzsh'], 'master')
+        zsh_root = Path(os.environ.get('ZSH') or self.home / '.oh-my-zsh')
+        zsh_custom = Path(os.environ.get('ZSH_CUSTOM') or zsh_root / 'custom')
+        self.repository('powerlevel10k', zsh_custom / 'themes/powerlevel10k',
+                        self.sources['powerlevel10k'], 'master')
         self.attempt('section:configurations', self.configurations)
         brew = self.attempt('homebrew', command, 'brew', '--version')
         release = self.attempt('homebrew', homebrew_release, self.sources)
@@ -362,8 +397,10 @@ class Checker:
         self.add('macos', manager='system', status='manual', note='Review System Settings > General > Software Update on the Mac.')
         expected = (['formula:' + name for name in (self.root / 'config/formulae.txt').read_text().split()]
                     + ['cask:' + line.split('\t')[0] for line in (self.root / 'config/casks.tsv').read_text().splitlines()]
+                    + ['font:' + line.split('\t')[0] for line in (self.root / 'config/font-casks.tsv').read_text().splitlines()]
                     + ['vscode:' + name for name in (self.root / 'config/vscode-extensions.txt').read_text().split()]
-                    + ['config:' + name for name in TEMPLATES] + ['cli:claude', 'cli:codex'])
+                    + ['config:' + name for name in TEMPLATES] +
+                    ['cli:claude', 'cli:codex', 'powerlevel10k'])
         if not self.with_claude:
             expected = [name for name in expected if name not in ('cask:claude-desktop', 'cli:claude', 'config:claude-settings.json')]
         present = {item['component'] for item in self.items}

@@ -100,6 +100,22 @@ execute_mode() {{
         self.assertNotIn(str(unselected.resolve()), guide)
         self.assertNotIn('Claude Desktop', guide)
 
+    def test_powerlevel10k_onboarding_is_specific_and_not_a_download(self):
+        home = self.root / 'home'
+        home.mkdir()
+        body = '''DESKTOP_MODE=download; MANUAL_STEPS=" powerlevel10k-configure";
+execute_mode() {
+  STEP_TOTAL=1
+  step_run demo echo configured
+}'''
+        result = self.run_session(body, dict(os.environ, HOME=str(home)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        guide = next(self.logs.glob('*/manual-steps.txt')).read_text()
+        self.assertIn('运行 exec zsh', guide)
+        self.assertIn('p10k configure', guide)
+        self.assertIn('MesloLGS NF', guide)
+        self.assertNotIn('以下安装包已准备', guide)
+
     def test_app_display_does_not_imply_homebrew_and_keeps_machine_ids(self):
         result = self.run_session('execute_mode() { step_run cask:claude-desktop true; }')
         self.assertEqual(result.returncode, 0, result.stderr)

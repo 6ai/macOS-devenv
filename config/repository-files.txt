@@ -13,6 +13,7 @@ config/claude-settings.json
 config/codex-config.toml
 config/download.curlrc
 config/env.zsh
+config/font-casks.tsv
 config/formulae.txt
 config/git-defaults.json
 config/gitignore-global
@@ -24,7 +25,16 @@ config/sources.tsv
 config/vimrc
 config/vscode-extensions.txt
 config/vscode-settings.json
+config/zsh/development.zsh
+config/zsh/framework.zsh
+config/zsh/git-functions.zsh
+config/zsh/media.zsh
+config/zsh/options.zsh
+config/zsh/terminal.zsh
+config/zsh/tools.zsh
+config/zsh/utilities.zsh
 docs/automation.md
+docs/development.md
 docs/installation.md
 docs/maintenance.md
 docs/result.schema.json

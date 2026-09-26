@@ -13,12 +13,21 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_LINE = '[ -f "$HOME/.config/macos-setup/shell.zsh" ] && source "$HOME/.config/macos-setup/shell.zsh"'
 ENV_SOURCE_LINE = '[ -f "$HOME/.config/macos-setup/env.zsh" ] && source "$HOME/.config/macos-setup/env.zsh"'
+SHELL_SOURCE_LINES = (SOURCE_LINE, 'source "$HOME/.config/macos-setup/shell.zsh"',
+                      'source ~/.config/macos-setup/shell.zsh',
+                      '. "$HOME/.config/macos-setup/shell.zsh"',
+                      '[[ -f "$HOME/.config/macos-setup/shell.zsh" ]] && source "$HOME/.config/macos-setup/shell.zsh"')
+ENV_SOURCE_LINES = (ENV_SOURCE_LINE, 'source "$HOME/.config/macos-setup/env.zsh"',
+                    'source ~/.config/macos-setup/env.zsh', '. "$HOME/.config/macos-setup/env.zsh"',
+                    '[[ -f "$HOME/.config/macos-setup/env.zsh" ]] && source "$HOME/.config/macos-setup/env.zsh"')
 VIM_SOURCE_LINE = "if filereadable(expand('$HOME/.config/macos-setup/vimrc')) | execute 'source ' . fnameescape(expand('$HOME/.config/macos-setup/vimrc')) | endif"
 PROFILE_PATH = Path('Library/Application Support/iTerm2/DynamicProfiles/clean-setup.json')
 PROFILE_BACKUP_PATH = PROFILE_PATH.parent.parent / 'macos-setup-backups'
 VSCODE_PATH = Path('Library/Application Support/Code/User/settings.json')
 KIRO_PATH = Path('.kiro/settings/permissions.yaml')
 GIT_IGNORE_PATH = Path('.config/macos-setup/gitignore-global')
+ZSH_MODULES = ('framework.zsh', 'options.zsh', 'tools.zsh', 'development.zsh',
+               'utilities.zsh', 'media.zsh', 'git-functions.zsh', 'terminal.zsh')
 GIT_DEFAULT_SECTIONS = {
     'alias', 'branch', 'color', 'commit', 'core', 'delta', 'diff', 'difftool', 'fetch', 'help', 'init',
     'interactive', 'merge', 'mergetool', 'pull', 'push', 'rebase', 'rerere', 'tag',
@@ -50,6 +59,31 @@ def write(path, content, preserve=False, backup_dir=None):
         if os.path.exists(temporary):
             os.unlink(temporary)
     print(f'Configured: {path}')
+
+
+def update_source_line(content, canonical, recognized):
+    """Canonicalize one exact managed loader while preserving all other lines."""
+    output, found = [], False
+    for row in content.splitlines(keepends=True):
+        body = row.rstrip('\r\n')
+        ending = row[len(body):]
+        if body in recognized:
+            if not found:
+                output.append(canonical + (ending or '\n'))
+                found = True
+        else:
+            output.append(row)
+    if found:
+        return ''.join(output)
+    if not content:
+        separator = ''
+    elif content.endswith('\n\n'):
+        separator = ''
+    elif content.endswith('\n'):
+        separator = '\n'
+    else:
+        separator = '\n\n'
+    return content + separator + canonical + '\n'
 
 
 def migrate_profile_backups(home):
@@ -215,6 +249,7 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     codex = (config_dir / 'codex-config.toml').read_text()
     profile = (config_dir / 'iterm2-profile.json').read_text()
     shell = (config_dir / 'shell.zsh').read_bytes()
+    zsh_modules = {name: (config_dir / 'zsh' / name).read_bytes() for name in ZSH_MODULES}
     environment = (config_dir / 'env.zsh').read_bytes()
     vim = (config_dir / 'vimrc').read_bytes()
     vscode = (config_dir / 'vscode-settings.json').read_bytes()
@@ -236,14 +271,18 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
         profile,
     )
     shell_home = shell_home or home
+    zsh_directory = home / '.config/macos-setup/zsh'
     paths = ([claude_path] if with_claude else []) + [codex_path, home / PROFILE_PATH,
              home / '.config/macos-setup/shell.zsh', home / '.config/macos-setup/env.zsh',
              home / '.config/macos-setup/vimrc', home / '.vimrc',
              home / GIT_IGNORE_PATH, home / VSCODE_PATH, home / KIRO_PATH,
+             zsh_directory, *[zsh_directory / name for name in ZSH_MODULES],
              shell_home / '.zshrc', shell_home / '.zprofile']
     for path in paths:
         if path.is_symlink():
             raise ValueError(f'Refusing to replace symlink: {path}')
+    if zsh_directory.exists() and not zsh_directory.is_dir():
+        raise ValueError(f'Managed Zsh module path is not a directory: {zsh_directory}')
     for path in (home / '.kiro', home / '.kiro/settings'):
         if path.is_symlink():
             raise ValueError(f'Refusing to configure Kiro through symlink: {path}')
@@ -255,8 +294,12 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     configure_git(home, git_defaults, git_ignore, current_git)
     write(codex_path, codex.encode(), preserve=True)
     write(home / PROFILE_PATH, profile.encode(), backup_dir=home / PROFILE_BACKUP_PATH)
-    write(home / '.config/macos-setup/shell.zsh', shell)
     write(home / '.config/macos-setup/env.zsh', environment)
+    # Publish dependencies before the loader so an upgrade never exposes a new
+    # shell.zsh that points at modules which have not been installed yet.
+    for name, content in zsh_modules.items():
+        write(zsh_directory / name, content)
+    write(home / '.config/macos-setup/shell.zsh', shell)
     write(home / '.config/macos-setup/vimrc', vim)
     # Existing VS Code settings may be JSONC. Preserve their bytes, including comments.
     write(home / VSCODE_PATH, vscode, preserve=True)
@@ -266,16 +309,11 @@ def configure(home, config_dir, codex_home=None, claude_home=None, shell_home=No
     for name in ('.zshrc', '.zprofile'):
         path = shell_home / name
         content = path.read_text() if path.exists() else ''
-        line = ENV_SOURCE_LINE if name == '.zprofile' else SOURCE_LINE
-        if name == '.zprofile' and SOURCE_LINE in content.splitlines():
-            rows = []
-            for row in content.splitlines():
-                row = ENV_SOURCE_LINE if row == SOURCE_LINE else row
-                if row != ENV_SOURCE_LINE or row not in rows:
-                    rows.append(row)
-            content = '\n'.join(rows) + '\n'
-        if line not in content.splitlines():
-            content = content.rstrip('\n') + '\n\n' + line + '\n'
+        if name == '.zprofile':
+            recognized = (*ENV_SOURCE_LINES, *SHELL_SOURCE_LINES)
+            content = update_source_line(content, ENV_SOURCE_LINE, recognized)
+        else:
+            content = update_source_line(content, SOURCE_LINE, SHELL_SOURCE_LINES)
         write(path, content.encode())
     path = home / '.vimrc'
     content = path.read_text() if path.exists() else ''
@@ -324,10 +362,15 @@ def verify(home, codex_home=None, claude_home=None, shell_home=None, with_claude
              (home / PROFILE_PATH).read_text())
     if list((home / PROFILE_PATH).parent.glob('clean-setup.json.backup-*')):
         raise ValueError('iTerm2 backup files remain in DynamicProfiles; rerun --configure-only to relocate them')
-    if not (home / '.config/macos-setup/shell.zsh').is_file():
-        raise ValueError('Missing shell configuration')
-    if not (home / '.config/macos-setup/env.zsh').is_file() or not (home / VSCODE_PATH).is_file():
-        raise ValueError('Missing environment or VS Code configuration')
+    managed = home / '.config/macos-setup'
+    selected = {'shell.zsh': config_dir / 'shell.zsh', 'env.zsh': config_dir / 'env.zsh'}
+    selected.update({'zsh/' + name: config_dir / 'zsh' / name for name in ZSH_MODULES})
+    for relative, template in selected.items():
+        path = managed / relative
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != template.read_bytes():
+            raise ValueError(f'Managed shell configuration differs from selected template: {relative}')
+    if not (home / VSCODE_PATH).is_file():
+        raise ValueError('Missing VS Code configuration')
     vim = home / '.config/macos-setup/vimrc'
     vim_entry = home / '.vimrc'
     if vim.is_symlink() or vim_entry.is_symlink():
